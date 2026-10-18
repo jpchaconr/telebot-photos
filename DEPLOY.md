@@ -175,7 +175,7 @@ El workflow `.github/workflows/deploy.yml`:
 
 1. En *Environment secrets*, añade los valores que mostró el instalador: `SSH_HOST`, `SSH_PORT`, `SSH_USER`, `SSH_KNOWN_HOSTS` y `SSH_PRIVATE_KEY` (el bloque entero, con las líneas `BEGIN` y `END`).
 2. **Opcional**: en *Environment variables*, `PUBLIC_URL` = `https://TU_DOMINIO`. El workflow comprobará que `/health` muestra la nueva versión.
-3. Deja *Deployment branches* en **No restriction** mientras la rama principal no sea `main`.
+3. Deja *Deployment branches* en **No restriction**, o limítalo a `main` cuando sea la rama predeterminada.
 
 **Lanzarlo**: *Actions → Deploy → Run workflow*.
 
@@ -188,8 +188,8 @@ El workflow `.github/workflows/deploy.yml`:
 **A partir de entonces**
 
 - Los pushes a `main` y las etiquetas `v*` despliegan solos.
-- Hoy el repositorio no tiene rama `main`: créala desde la rama actual y márcala como predeterminada en *Settings → General → Default branch*. El servidor sigue siempre la rama predeterminada del repositorio, así que en el siguiente despliegue pasará solo a `main`.
-- Mientras tanto, despliega a mano con *Run workflow*.
+- Marca `main` como rama predeterminada en *Settings → General → Default branch*. El servidor sigue siempre la rama predeterminada del repositorio, así que en el siguiente despliegue pasará solo a `main`, y el comando de instalación (`…/HEAD/deploy/install.sh`) también la usará.
+- Mientras `main` no sea la predeterminada, despliega a mano con *Run workflow*.
 
 ## 8. Operación diaria
 

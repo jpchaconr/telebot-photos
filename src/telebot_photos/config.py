@@ -7,7 +7,7 @@ from typing import Annotated
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cryptography.fernet import Fernet
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -18,8 +18,10 @@ class Settings(BaseSettings):
     # URL of a self-hosted telegram-bot-api server (e.g. http://telegram-bot-api:8081).
     # When empty the official cloud Bot API is used and downloads are limited to 20 MB.
     bot_api_url: str | None = None
-    # Public HTTPS URL where the OAuth callbacks are reachable (e.g. https://bot.example.com).
-    public_base_url: str
+    # Public hostname of the server (e.g. nombre.duckdns.org), also used by Caddy.
+    domain: str | None = None
+    # Public HTTPS URL where the OAuth callbacks are reachable. Defaults to https://DOMAIN.
+    public_base_url: str = ""
     # Fernet key used to encrypt the credentials stored for every chat.
     encryption_key: str
 
@@ -41,6 +43,10 @@ class Settings(BaseSettings):
     # Telegram user ids allowed to run /configurar. Empty means any group administrator.
     allowed_configurators: Annotated[list[int], NoDecode] = []
     log_level: str = "INFO"
+    # Shown on the public privacy page.
+    contact_email: str | None = None
+    # Set by the Docker image build; reported by /health.
+    app_version: str = "dev"
 
     @field_validator("allowed_configurators", mode="before")
     @classmethod
@@ -61,10 +67,18 @@ class Settings(BaseSettings):
             Fernet(value.encode())
         except ValueError as exc:
             raise ValueError(
-                "ENCRYPTION_KEY no es una clave Fernet válida. Genera una con: python -c "
-                '"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"'
+                "ENCRYPTION_KEY no es una clave Fernet válida. Genera una con: "
+                "openssl rand -base64 32 | tr '+/' '-_'"
             ) from exc
         return value
+
+    @model_validator(mode="after")
+    def _derive_public_url(self) -> Settings:
+        if not self.public_base_url:
+            if not self.domain:
+                raise ValueError("Define DOMAIN (o PUBLIC_BASE_URL) con la dirección pública")
+            self.public_base_url = f"https://{self.domain.strip().strip('/')}"
+        return self
 
     @field_validator("timezone")
     @classmethod

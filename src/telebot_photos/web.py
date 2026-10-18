@@ -33,28 +33,108 @@ body{{font-family:system-ui,sans-serif;background:#f4f5f7;color:#1d2125;margin:0
 display:flex;min-height:100vh;align-items:center;justify-content:center;padding:16px}}
 main{{background:#fff;border-radius:12px;padding:32px;max-width:420px;
 box-shadow:0 2px 12px rgba(0,0,0,.08);text-align:center}}
-h1{{font-size:1.4rem;margin:0 0 12px}}p{{line-height:1.5;margin:0}}
+main.doc{{max-width:720px;text-align:left}}
+h1{{font-size:1.4rem;margin:0 0 12px}}h2{{font-size:1.1rem;margin:24px 0 8px}}
+p,li{{line-height:1.5}}p{{margin:0 0 12px}}a{{color:#0c66e4}}
 @media (prefers-color-scheme:dark){{body{{background:#161a1d;color:#dee4ea}}
-main{{background:#22272b}}}}
+main{{background:#22272b}}a{{color:#579dff}}}}
 </style></head>
-<body><main><h1>{title}</h1><p>{body}</p></main></body></html>
+<body><main class="{css_class}"><h1>{title}</h1>{content}</main></body></html>
 """
 
 
-def page(title: str, body: str, status: int = 200) -> web.Response:
+def html_page(
+    title: str, content_html: str, *, status: int = 200, document: bool = False
+) -> web.Response:
+    """Render a page whose ``content_html`` is trusted markup built by this module."""
     return web.Response(
-        text=PAGE.format(title=html.escape(title), body=html.escape(body)),
+        text=PAGE.format(
+            title=html.escape(title),
+            content=content_html,
+            css_class="doc" if document else "",
+        ),
         status=status,
         content_type="text/html",
     )
 
 
-async def health(_: web.Request) -> web.Response:
-    return web.json_response({"status": "ok"})
+def page(title: str, body: str, status: int = 200) -> web.Response:
+    return html_page(title, f"<p>{html.escape(body)}</p>", status=status)
 
 
-async def index(_: web.Request) -> web.Response:
-    return page("Bot de fotos", "Este servidor atiende las autorizaciones del bot de Telegram.")
+async def health(request: web.Request) -> web.Response:
+    version = request.app[SERVICES_KEY].settings.app_version
+    return web.json_response({"status": "ok", "version": version})
+
+
+def _bot_link(bot: Bot) -> str:
+    try:
+        username = bot.username
+    except RuntimeError:  # the bot has not called getMe yet
+        return "el bot"
+    return f'<a href="https://t.me/{html.escape(username)}">@{html.escape(username)}</a>'
+
+
+async def index(request: web.Request) -> web.Response:
+    bot = _bot_link(request.app[BOT_KEY])
+    return html_page(
+        "Bot de fotos para grupos de Telegram",
+        f"<p>{bot} guarda automáticamente las fotos, vídeos y archivos que se envían en un "
+        "grupo de Telegram en el almacenamiento que elige un administrador del grupo: "
+        "Google Drive, OneDrive o un bucket compatible con S3.</p>"
+        "<p>Para usarlo, añádelo a un grupo y escribe /configurar.</p>"
+        '<p><a href="/privacy">Política de privacidad</a></p>',
+    )
+
+
+async def privacy(request: web.Request) -> web.Response:
+    settings = request.app[SERVICES_KEY].settings
+    contact = (
+        f'Escribe a <a href="mailto:{html.escape(settings.contact_email)}">'
+        f"{html.escape(settings.contact_email)}</a>."
+        if settings.contact_email
+        else "Contacta con el administrador del grupo que te invitó a usar el bot."
+    )
+    return html_page(
+        "Política de privacidad",
+        f"""
+<p>Este bot copia el contenido multimedia de grupos de Telegram en el almacenamiento que
+elige un administrador de cada grupo. Esta página explica qué datos trata y para qué.</p>
+<h2>Qué datos se tratan</h2>
+<ul>
+<li><b>Configuración de cada grupo:</b> identificador y nombre del grupo, quién lo configuró,
+el proveedor elegido y sus credenciales (tokens OAuth de Google o Microsoft, o claves S3).
+Las credenciales se guardan cifradas.</li>
+<li><b>Archivos enviados al grupo:</b> identificadores de Telegram del mensaje y del archivo,
+nombre del remitente, fecha y pie de foto, para nombrar cada copia y evitar duplicados.
+Los archivos se descargan temporalmente en este servidor solo para subirlos, y se borran
+después.</li>
+</ul>
+<h2>Para qué se usan</h2>
+<p>Únicamente para copiar los archivos del grupo a la cuenta de almacenamiento que eligió su
+administrador. No se usan con fines publicitarios, no se venden y no se ceden a terceros.</p>
+<h2>Datos de Google</h2>
+<p>El bot solo pide el permiso <code>drive.file</code>: puede crear carpetas y archivos en tu
+Google Drive y acceder únicamente a los que él mismo ha creado. El uso y la transferencia de
+la información recibida de las API de Google cumplen la
+<a href="https://developers.google.com/terms/api-services-user-data-policy">Política de
+datos de usuario de los servicios de las API de Google</a>, incluidos los requisitos de uso
+limitado (Limited Use).</p>
+<h2>Datos de Microsoft</h2>
+<p>Con OneDrive, el bot usa los permisos <code>Files.ReadWrite</code>,
+<code>offline_access</code> y <code>User.Read</code> solo para crear la carpeta del grupo y
+subir los archivos.</p>
+<h2>Conservación y borrado</h2>
+<p>Un administrador puede usar /desconectar en el grupo para borrar las credenciales y la cola
+de archivos pendientes. También puedes revocar el acceso desde tu cuenta de
+<a href="https://myaccount.google.com/permissions">Google</a> o de
+<a href="https://account.live.com/consent/Manage">Microsoft</a>. Los archivos ya copiados
+están en tu cuenta y el bot no los borra.</p>
+<h2>Contacto</h2>
+<p>{contact}</p>
+""",
+        document=True,
+    )
 
 
 async def _tell_user(bot: Bot, user_id: int, text: str) -> None:
@@ -120,6 +200,7 @@ def create_web_app(services: Services, bot: Bot) -> web.Application:
     app[SERVICES_KEY] = services
     app[BOT_KEY] = bot
     app.router.add_get("/", index)
+    app.router.add_get("/privacy", privacy)
     app.router.add_get("/health", health)
     app.router.add_get("/oauth/{client}/callback", oauth_callback)
     return app

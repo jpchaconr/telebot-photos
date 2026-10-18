@@ -16,6 +16,7 @@ from telegram import (
     BotCommandScopeAllPrivateChats,
     Update,
 )
+from telegram.error import BadRequest, NetworkError
 from telegram.ext import Application, ApplicationBuilder, ContextTypes
 from telegram.warnings import PTBUserWarning
 
@@ -68,6 +69,35 @@ async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     log.error("Error handling update %s", update, exc_info=context.error)
 
 
+async def initialize_with_retry(
+    application: Application,
+    stop: asyncio.Event,
+    *,
+    attempts: int = 10,
+    base_delay: float = 2.0,
+    max_delay: float = 30.0,
+) -> bool:
+    """Call ``getMe`` until the Bot API answers (the local server may still be starting).
+
+    Returns False if ``stop`` was set while waiting. Gives up (re-raising) after about three
+    minutes so the container restarts with a clear error.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            await application.initialize()
+            return True
+        except NetworkError as exc:
+            if isinstance(exc, BadRequest) or attempt == attempts:
+                raise
+            delay = min(base_delay * 2 ** (attempt - 1), max_delay)
+            log.warning("The Bot API is not reachable yet (%s); retrying in %.0fs", exc, delay)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop.wait(), delay)
+            if stop.is_set():
+                return False
+    return False
+
+
 async def serve(settings: Settings, stop: asyncio.Event) -> None:
     """Run the bot, the web server and the workers until ``stop`` is set."""
     db = Database(settings.database_path, Crypto(settings.encryption_key))
@@ -84,7 +114,9 @@ async def serve(settings: Settings, stop: asyncio.Event) -> None:
 
     runner = web.AppRunner(create_web_app(services, application.bot))
     try:
-        async with application:
+        if not await initialize_with_retry(application, stop):
+            return
+        try:
             await application.bot.set_my_commands(GROUP_COMMANDS, BotCommandScopeAllGroupChats())
             await application.bot.set_my_commands(
                 PRIVATE_COMMANDS, BotCommandScopeAllPrivateChats()
@@ -95,8 +127,9 @@ async def serve(settings: Settings, stop: asyncio.Event) -> None:
             await web.TCPSite(runner, settings.web_host, settings.web_port).start()
             await worker.start()
             log.info(
-                "Bot @%s running (Bot API: %s, providers: %s)",
+                "Bot @%s running (version %s, Bot API: %s, providers: %s)",
                 application.bot.username,
+                settings.app_version,
                 settings.bot_api_url or "cloud",
                 ", ".join(services.available_providers()),
             )
@@ -105,6 +138,8 @@ async def serve(settings: Settings, stop: asyncio.Event) -> None:
             await worker.stop()
             await application.updater.stop()
             await application.stop()
+        finally:
+            await application.shutdown()
     finally:
         await runner.cleanup()
         await backends.aclose()

@@ -128,11 +128,52 @@ Usa claves limitadas a ese bucket, con permiso de escritura.
 ## Desarrollo
 
 ```bash
-python3 -m venv .venv && . .venv/bin/activate
+python3 -m venv .venv && . .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 pytest          # incluye una prueba de extremo a extremo con una Bot API falsa y S3 simulado
 ruff check src tests && ruff format --check src tests
 ```
+
+### Probar el bot en tu ordenador
+
+No hace falta un VPS: el bot pide los mensajes a Telegram (*polling*), así que no necesita IP pública ni HTTPS. Con un S3 local se prueba el recorrido completo. Solo Google Drive y OneDrive necesitan una URL pública (ver más abajo).
+
+1. **Crea un bot solo para pruebas** en [@BotFather](https://t.me/BotFather) (`/newbot`) y desactiva el *privacy mode* (`/setprivacy` → *Disable*).
+   - No uses el token del VPS: si dos procesos piden mensajes con el mismo token, Telegram corta uno de ellos con un error `Conflict`.
+   - Si el bot ya estaba en el grupo cuando desactivaste el *privacy mode*, sácalo y vuelve a añadirlo.
+2. **Crea un `.env`** en la raíz del proyecto:
+   ```ini
+   TELEGRAM_BOT_TOKEN='token-del-bot-de-pruebas'
+   ENCRYPTION_KEY='...'
+   PUBLIC_BASE_URL='http://localhost:8080'
+   TIMEZONE='Europe/Madrid'
+   ```
+   - Genera la clave con `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
+   - Sin `BOT_API_URL` se usa la API de Telegram, con el límite de 20 MB, igual que en el modo de 20 MB del VPS.
+   - La base de datos se crea en `data/bot.db`.
+3. **Arranca un S3 local** con moto (se instala con `.[dev]`) en otra terminal, con el venv activado, y crea el bucket una vez:
+   ```bash
+   moto_server -p 9000
+   python -c "import boto3; boto3.client('s3', endpoint_url='http://localhost:9000', aws_access_key_id='test', aws_secret_access_key='test', region_name='us-east-1').create_bucket(Bucket='fotos')"
+   ```
+4. **Arranca el bot**: `python -m telebot_photos`.
+5. **Configura el grupo**: añade el bot a un grupo de prueba y escribe `/configurar` → **S3**. Cuando te lo pida en privado, envía:
+   - endpoint: `http://localhost:9000`
+   - región: `us-east-1`
+   - bucket: `fotos`
+   - claves: `test` y `test`
+6. **Envía una foto al grupo**: el bot reacciona con 👍. Lo guardado se ve en <http://localhost:9000/fotos> o en el panel <http://localhost:9000/moto-api/>.
+
+**Ten en cuenta:**
+
+- **moto guarda todo en memoria**: al pararlo se pierden los archivos y tienes que volver a crear el bucket. Si quieres que se conserven, usa la capa gratuita de Backblaze B2 o Cloudflare R2 ([endpoints](#datos-para-proveedores-s3-habituales)).
+- **Google Drive y OneDrive** necesitan una URL pública para el OAuth:
+  1. Arranca un túnel, por ejemplo `cloudflared tunnel --url http://localhost:8080`.
+  2. Pon la URL que te dé en `PUBLIC_BASE_URL` y en los redirect URI de las consolas de Google y Microsoft (apartados 5 y 6 de [DEPLOY.md](DEPLOY.md)).
+
+  Con el túnel rápido, la URL cambia cada vez que lo arrancas.
+
+### Imagen de Docker en local
 
 Para construir la imagen en local en vez de descargarla de GHCR:
 
@@ -142,12 +183,9 @@ docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 
 Añade `-f docker-compose.bot-api.yml` (después de `docker-compose.yml`) para el modo de 2 GB.
 
-Para probar sin Docker, crea un `.env` y ejecuta `python -m telebot_photos`:
+### Estructura
 
-- Sin `BOT_API_URL` se usa la API en la nube de Telegram, con el límite de 20 MB y sin `logOut`.
-- Para OAuth necesitas una URL pública: puedes usar un túnel como `cloudflared tunnel --url http://localhost:8080` y poner esa URL en `PUBLIC_BASE_URL` y en los redirect URI. Con S3 no hace falta.
-
-Estructura del código (`src/telebot_photos/`):
+Código (`src/telebot_photos/`):
 
 | Módulo | Contenido |
 |---|---|

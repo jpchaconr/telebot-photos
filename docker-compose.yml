@@ -2,6 +2,9 @@
 # directory the repository was cloned into.
 name: telebot-photos
 
+# On its own this file uses Telegram's cloud Bot API: files of up to 20 MB. For files of up
+# to 2 GB, add docker-compose.bot-api.yml (deploy/install.sh writes COMPOSE_FILE in .env).
+
 x-logging: &logging
   driver: json-file
   options:
@@ -9,18 +12,6 @@ x-logging: &logging
     max-file: "3"
 
 services:
-  # Self-hosted Bot API server: lets the bot download files of up to 2 GB.
-  telegram-bot-api:
-    image: aiogram/telegram-bot-api:10.3
-    restart: unless-stopped
-    logging: *logging
-    environment:
-      TELEGRAM_API_ID: ${TELEGRAM_API_ID:?Define TELEGRAM_API_ID en .env}
-      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?Define TELEGRAM_API_HASH en .env}
-      TELEGRAM_LOCAL: "1"
-    volumes:
-      - bot-api-data:/var/lib/telegram-bot-api
-
   bot:
     # Published by .github/workflows/deploy.yml. To build it yourself instead, add
     # -f docker-compose.build.yml (see DEPLOY.md).
@@ -28,15 +19,9 @@ services:
     restart: unless-stopped
     logging: *logging
     env_file: .env
-    environment:
-      BOT_API_URL: http://telegram-bot-api:8081
-    depends_on:
-      - telegram-bot-api
     # Time to finish the current database writes on shutdown.
     stop_grace_period: 30s
     volumes:
-      # Must be mounted at the same path as in telegram-bot-api (local mode).
-      - bot-api-data:/var/lib/telegram-bot-api
       - bot-data:/data
 
   # HTTPS with automatic certificates for the OAuth callbacks and the public pages.
@@ -62,7 +47,6 @@ services:
       - bot
 
 volumes:
-  bot-api-data:
   bot-data:
   caddy-data:
   caddy-config:

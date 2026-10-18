@@ -10,6 +10,9 @@ from cryptography.fernet import Fernet
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+# Biggest file a bot can download through Telegram's cloud Bot API.
+CLOUD_BOT_API_DOWNLOAD_LIMIT = 20 * 1024 * 1024
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -96,6 +99,11 @@ class Settings(BaseSettings):
     @property
     def local_bot_api(self) -> bool:
         return bool(self.bot_api_url)
+
+    @property
+    def max_download_size(self) -> int | None:
+        """Biggest file the bot can fetch from Telegram (None: no limit worth checking)."""
+        return None if self.local_bot_api else CLOUD_BOT_API_DOWNLOAD_LIMIT
 
     @property
     def google_enabled(self) -> bool:

@@ -11,6 +11,8 @@
 #   TELEBOT_REF=<branch or tag>       repository version to clone (default: the default branch)
 #   TELEBOT_NONINTERACTIVE=1          no questions: values come from environment variables
 #                                     named like the .env keys (TELEGRAM_BOT_TOKEN, ...)
+#   TELEGRAM_BOT_API=cloud|local      files up to 20 MB, or up to 2 GB with a local Bot API
+#                                     server (needs TELEGRAM_API_ID and TELEGRAM_API_HASH)
 #   TELEBOT_DOMAIN_MODE=duckdns|sslip|custom, DUCKDNS_SUBDOMAIN=<name>
 #   TELEBOT_DEPLOY_USER=1|0           create (or not) the deploy user for GitHub Actions
 #   TELEBOT_LOCAL_BUILD=1             build the bot image here instead of pulling it
@@ -336,12 +338,46 @@ configure_telegram() {
 		validate_token "$token" || die "Telegram ya no acepta TELEGRAM_BOT_TOKEN de $ENV_FILE"
 	fi
 	[[ -n $BOT_USERNAME ]] && ok "Bot: @$BOT_USERNAME"
+	configure_bot_api
+}
 
-	if [[ -z $(env_get "$ENV_FILE" TELEGRAM_API_ID) && $NONINTERACTIVE != 1 ]]; then
-		info "api_id y api_hash: https://my.telegram.org → API development tools."
+# TELEGRAM_BOT_API in .env: "cloud" uses Telegram's Bot API (files up to 20 MB); "local" adds
+# a self-hosted Bot API server (files up to 2 GB). To switch, edit it and run this again.
+configure_bot_api() {
+	local mode local_api=0
+	mode=$(env_get "$ENV_FILE" TELEGRAM_BOT_API)
+	mode=${mode:-${TELEGRAM_BOT_API:-}}
+	if [[ -z $mode && -n ${TELEGRAM_API_ID:-}$(env_get "$ENV_FILE" TELEGRAM_API_ID) ]]; then
+		mode=local # api_id given, or installed before this option existed
+	elif [[ -z $mode && $NONINTERACTIVE == 1 ]]; then
+		mode=cloud
+	elif [[ -z $mode ]]; then
+		cat >/dev/tty <<'EOF'
+
+¿Qué tamaño máximo de archivo necesitas?
+  1) Hasta 20 MB  ← recomendado. Fotos, notas de voz y vídeos cortos. Solo hace falta el
+     token del bot.
+  2) Hasta 2 GB: también vídeos largos o enviados "como archivo". Añade el servidor local de
+     la Bot API, que pide el api_id y el api_hash de https://my.telegram.org y más disco.
+EOF
+		case $(prompt "Elige 1 o 2" 1) in
+		1) mode=cloud ;;
+		2) mode=local ;;
+		*) die "Opción no válida" ;;
+		esac
 	fi
-	ask_value TELEGRAM_API_ID "api_id" '^[0-9]{3,12}$'
-	ask_value TELEGRAM_API_HASH "api_hash" '^[0-9a-f]{32}$' 1
+	[[ $mode == cloud || $mode == local ]] || die "TELEGRAM_BOT_API debe ser cloud o local"
+	env_set "$ENV_FILE" TELEGRAM_BOT_API "$mode"
+
+	if [[ $mode == local ]]; then
+		local_api=1
+		if [[ -z $(env_get "$ENV_FILE" TELEGRAM_API_ID) && $NONINTERACTIVE != 1 ]]; then
+			info "api_id y api_hash: https://my.telegram.org → API development tools."
+		fi
+		ask_value TELEGRAM_API_ID "api_id" '^[0-9]{3,12}$'
+		ask_value TELEGRAM_API_HASH "api_hash" '^[0-9a-f]{32}$' 1
+	fi
+	set_compose_file "$local_api" "$(flag uses_local_build)"
 }
 
 configure_domain() {
@@ -495,6 +531,22 @@ telegram_logout() {
 	fi
 }
 
+# Back from the local Bot API server: the cloud one refuses the bot for 10 minutes after logOut.
+telegram_back_to_cloud() {
+	[[ $SKIP_TELEGRAM == 1 ]] && return 0
+	local token marker remaining
+	token=$(env_get "$ENV_FILE" TELEGRAM_BOT_TOKEN)
+	marker="$STATE_DIR/logout-${token%%:*}"
+	[[ -e $marker ]] || return 0
+	remaining=$(($(stat -c %Y "$marker") + 600 - $(date +%s)))
+	if ((remaining > 0)); then
+		info "Telegram no deja volver a la API en la nube hasta 10 minutos después de logOut: espero $((remaining / 60 + 1)) min…"
+		sleep "$remaining"
+	fi
+	rm -f "$marker"
+	ok "El bot vuelve a la API en la nube de Telegram (archivos de hasta 20 MB)"
+}
+
 choose_image() {
 	local tag image
 	tag=$(env_get "$ENV_FILE" BOT_TAG)
@@ -502,7 +554,7 @@ choose_image() {
 	image=$(env_get "$ENV_FILE" BOT_IMAGE)
 	image=${image:-$BOT_IMAGE_DEFAULT}
 	if [[ ${TELEBOT_LOCAL_BUILD:-0} == 1 ]]; then
-		env_set "$ENV_FILE" COMPOSE_FILE "$LOCAL_BUILD_COMPOSE_FILE"
+		set_compose_file "$(flag uses_local_bot_api)" 1
 	fi
 	if uses_local_build; then
 		info "La imagen del bot se construye en este servidor (docker-compose.build.yml)"
@@ -514,16 +566,18 @@ choose_image() {
 	fi
 	warn "La imagen ${image}:${tag} todavía no está publicada (o no es pública)."
 	warn "La construyo aquí. Cuando GitHub Actions la publique, 'deploy/update.sh latest' la usará."
-	env_set "$ENV_FILE" COMPOSE_FILE "$LOCAL_BUILD_COMPOSE_FILE"
+	set_compose_file "$(flag uses_local_bot_api)" 1
 }
 
 start_stack() {
+	local services
 	cd "$ROOT"
 	info "Descargando las imágenes…"
 	# Best effort: "up" pulls whatever is missing, and a Docker Hub rate limit should not
 	# stop a re-run when the images are already here.
-	docker compose pull --quiet --ignore-pull-failures telegram-bot-api caddy >/dev/null 2>&1 ||
-		warn "No se pudieron actualizar las imágenes de telegram-bot-api/caddy"
+	mapfile -t services < <(helper_services)
+	docker compose pull --quiet --ignore-pull-failures "${services[@]}" >/dev/null 2>&1 ||
+		warn "No se pudieron actualizar las imágenes de ${services[*]}"
 	if uses_local_build; then
 		info "Construyendo la imagen del bot (unos minutos la primera vez)…"
 		docker compose build --pull bot
@@ -693,8 +747,9 @@ install_cron() {
 }
 
 summary() {
-	local domain
+	local domain limit="20 MB por archivo (para 2 GB: DEPLOY.md, «Cambiar el tamaño máximo»)"
 	domain=$(env_get "$ENV_FILE" DOMAIN)
+	uses_local_bot_api && limit="2 GB por archivo (servidor local de la Bot API)"
 	cat <<EOF
 
 ✔ telebot-photos está en marcha en https://${domain}/
@@ -702,6 +757,7 @@ summary() {
   Siguiente paso: añade ${BOT_USERNAME:+@$BOT_USERNAME }el bot a un grupo y escribe /configurar.
   (S3 funciona ya; Google Drive y OneDrive necesitan sus credenciales: ver DEPLOY.md.)
 
+  Tamaño máximo:   ${limit}
   Logs:            cd ${ROOT} && sudo docker compose logs -f bot
   Actualizar:      sudo ${ROOT}/deploy/update.sh latest
   Copia de datos:  sudo ${ROOT}/deploy/backup.sh   (también cada noche a las 03:17)
@@ -743,7 +799,11 @@ main() {
 	configure_misc
 	update_duckdns
 	wait_for_dns
-	telegram_logout
+	if uses_local_bot_api; then
+		telegram_logout
+	else
+		telegram_back_to_cloud
+	fi
 	choose_image
 	start_stack
 	check_https

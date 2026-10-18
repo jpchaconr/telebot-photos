@@ -2,9 +2,9 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
-from telegram import Animation, Chat, Document, Message, PhotoSize, Update, User
+from telegram import Animation, Chat, Document, Message, PhotoSize, Update, User, Video
 
-from conftest import FakeWorker, configure_chat
+from conftest import FakeBot, FakeWorker, configure_chat
 from telebot_photos.bot.media import extract_media, media_handler, sender_name
 
 GROUP = Chat(id=-100, type=Chat.SUPERGROUP, title="Familia")
@@ -47,10 +47,12 @@ def test_sender_name_prefers_username_then_full_name():
 
 
 @pytest.fixture
-def context(db):
+def context(db, settings):
     worker = FakeWorker()
-    services = SimpleNamespace(db=db, worker=worker)
-    return SimpleNamespace(bot_data={"services": services}, worker=worker)
+    services = SimpleNamespace(db=db, worker=worker, settings=settings)
+    return SimpleNamespace(
+        bot_data={"services": services}, worker=worker, bot=FakeBot(), services=services
+    )
 
 
 async def test_media_is_queued_only_for_configured_active_chats(db, context):
@@ -71,3 +73,37 @@ async def test_media_is_queued_only_for_configured_active_chats(db, context):
     other = Update(2, message=message(document=Document("d", "u-doc", file_name="a.pdf")))
     await media_handler(other, context)
     assert (await db.job_stats(-100))["pending"] == 0
+
+
+def video(size: int | None) -> Video:
+    return Video("vid", "u-vid", 1920, 1080, 60, mime_type="video/mp4", file_size=size)
+
+
+async def test_cloud_bot_api_skips_files_over_20_mb_with_a_warning(db, context, settings):
+    context.services.settings = settings.model_copy(update={"bot_api_url": None})
+    await configure_chat(db)
+
+    await media_handler(Update(1, message=message(video=video(35 * 1024 * 1024 + 1))), context)
+    assert (await db.job_stats(-100))["pending"] == 0
+    assert context.worker.notified == 0
+    [warning] = context.bot.messages
+    assert warning["chat_id"] == -100
+    assert "36 MB" in warning["text"] and "20 MB" in warning["text"]
+    assert warning["reply_parameters"].message_id == 10
+    assert warning["disable_notification"] is True
+
+    await media_handler(Update(2, message=message(video=video(20 * 1024 * 1024))), context)
+    assert (await db.job_stats(-100))["pending"] == 1
+    assert len(context.bot.messages) == 1
+
+
+async def test_size_is_not_checked_with_local_bot_api_or_unknown_size(db, context, settings):
+    await configure_chat(db)
+    await media_handler(Update(1, message=message(video=video(1500 * 1024 * 1024))), context)
+    assert (await db.job_stats(-100))["pending"] == 1
+
+    context.services.settings = settings.model_copy(update={"bot_api_url": None})
+    unknown = Document("doc", "u-unknown", file_name="a.zip")
+    await media_handler(Update(2, message=message(document=unknown)), context)
+    assert (await db.job_stats(-100))["pending"] == 2
+    assert context.bot.messages == []

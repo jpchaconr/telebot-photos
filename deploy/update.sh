@@ -63,11 +63,13 @@ restore_previous() {
 		warn "La versión anterior tampoco arrancó: revisa 'docker compose logs bot'"
 }
 
-# The other images only change with docker-compose.yml: a failed pull (e.g. a Docker Hub rate
+# The other images only change with the compose files: a failed pull (e.g. a Docker Hub rate
 # limit) must not block the update, "up" pulls whatever is really missing.
 pull_others() {
-	docker compose pull --quiet --ignore-pull-failures telegram-bot-api caddy >/dev/null 2>&1 ||
-		warn "No se pudieron actualizar las imágenes de telegram-bot-api/caddy; sigo con las que hay"
+	local services
+	mapfile -t services < <(helper_services)
+	docker compose pull --quiet --ignore-pull-failures "${services[@]}" >/dev/null 2>&1 ||
+		warn "No se pudieron actualizar las imágenes de ${services[*]}; sigo con las que hay"
 }
 
 pull_failed_hint() {
@@ -84,7 +86,7 @@ repo_update || warn "No se pudo actualizar el repositorio (git); sigo con los fi
 if [[ -n $tag ]]; then
 	# An explicit tag always comes from GHCR: leave local-build mode if it was on.
 	env_set "$ENV_FILE" BOT_TAG "$tag"
-	env_unset "$ENV_FILE" COMPOSE_FILE
+	set_compose_file "$(flag uses_local_bot_api)" 0
 	info "Descargando ${image}:${tag}…"
 	if ! docker compose pull --quiet bot; then
 		pull_failed_hint

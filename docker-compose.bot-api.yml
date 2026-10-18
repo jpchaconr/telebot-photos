@@ -1,0 +1,32 @@
+# Files of up to 2 GB: runs a self-hosted Bot API server next to the bot (Telegram's cloud
+# Bot API stops at 20 MB). deploy/install.sh enables it with TELEGRAM_BOT_API=local, which
+# writes this to .env:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.bot-api.yml
+# The bot must be logged out of the cloud Bot API first (the installer does it).
+services:
+  telegram-bot-api:
+    image: aiogram/telegram-bot-api:10.3
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:?Define TELEGRAM_API_ID en .env}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?Define TELEGRAM_API_HASH en .env}
+      TELEGRAM_LOCAL: "1"
+    volumes:
+      - bot-api-data:/var/lib/telegram-bot-api
+
+  bot:
+    environment:
+      BOT_API_URL: http://telegram-bot-api:8081
+    depends_on:
+      - telegram-bot-api
+    volumes:
+      # Must be mounted at the same path as in telegram-bot-api (local mode).
+      - bot-api-data:/var/lib/telegram-bot-api
+
+volumes:
+  bot-api-data:

@@ -150,7 +150,34 @@ uses_local_build() {
 	[[ $(env_get "$ROOT/.env" COMPOSE_FILE) == *docker-compose.build.yml* ]]
 }
 
+# uses_local_bot_api -> true when .env selects docker-compose.bot-api.yml via COMPOSE_FILE:
+# the self-hosted Bot API server (files up to 2 GB) instead of the cloud one (up to 20 MB).
+uses_local_bot_api() {
+	[[ $(env_get "$ROOT/.env" COMPOSE_FILE) == *docker-compose.bot-api.yml* ]]
+}
+
+# set_compose_file LOCAL_BOT_API LOCAL_BUILD (1 or 0 each) -> writes COMPOSE_FILE in .env.
+set_compose_file() {
+	local files=docker-compose.yml
+	[[ $1 == 1 ]] && files+=:docker-compose.bot-api.yml
+	[[ $2 == 1 ]] && files+=:docker-compose.build.yml
+	if [[ $files == docker-compose.yml ]]; then
+		env_unset "$ROOT/.env" COMPOSE_FILE
+	else
+		env_set "$ROOT/.env" COMPOSE_FILE "$files"
+	fi
+}
+
+# flag COMMAND... -> prints 1 if the command succeeds, 0 otherwise.
+flag() {
+	if "$@"; then echo 1; else echo 0; fi
+}
+
+# helper_services -> the services besides the bot, one per line (images pulled separately).
+helper_services() {
+	uses_local_bot_api && echo telegram-bot-api
+	echo caddy
+}
+
 # shellcheck disable=SC2034 # used by the scripts that source this file
 BOT_IMAGE_DEFAULT=ghcr.io/jpchaconr/telebot-photos
-# shellcheck disable=SC2034
-LOCAL_BUILD_COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml

@@ -8,12 +8,15 @@ from typing import Any
 from urllib.parse import quote
 
 import boto3
+from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError, EndpointConnectionError
 
 from .base import PermanentStorageError, StorageAuthError, StorageError, UploadRequest
 
 PROVIDER = "S3"
+# boto3 defaults to 10 threads x 8 MiB per upload; keep memory low on 1 GB servers.
+TRANSFER_CONFIG = TransferConfig(max_concurrency=4)
 _AUTH_CODES = {
     "AccessDenied",
     "InvalidAccessKeyId",
@@ -81,6 +84,7 @@ class S3Backend:
                 self.bucket,
                 key,
                 ExtraArgs=extra,
+                Config=TRANSFER_CONFIG,
             )
         except (BotoCoreError, ClientError) as exc:
             raise translate_error(exc) from exc

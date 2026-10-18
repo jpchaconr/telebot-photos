@@ -136,8 +136,11 @@ class UploadWorker:
             await self._react(job)
         finally:
             if local_path is not None and (finished or not owned_by_bot_api):
-                with contextlib.suppress(OSError):
+                try:
                     local_path.unlink(missing_ok=True)
+                except OSError as exc:
+                    # Usually a uid mismatch with the Bot API volume: the disk will fill up.
+                    log.warning("Could not delete %s: %s", local_path, exc)
 
     async def _fetch(self, job: Job) -> tuple[Path, bool]:
         """Return the local path of the file and whether it lives in the Bot API server's dir."""

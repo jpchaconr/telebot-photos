@@ -1,3 +1,8 @@
+{
+	# Let's Encrypt account e-mail (expiry notices; also enables the ZeroSSL fallback).
+	email {$ACME_EMAIL}
+}
+
 {$DOMAIN} {
 	encode zstd gzip
 	reverse_proxy bot:8080

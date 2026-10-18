@@ -41,10 +41,26 @@ async def new_state(db, provider="gdrive", user_id=1):
     )
 
 
-async def test_health(client):
+async def test_health_reports_version(client, settings):
+    settings.app_version = "sha-abc1234"
     response = await client.get("/health")
     assert response.status == 200
-    assert await response.json() == {"status": "ok"}
+    assert await response.json() == {"status": "ok", "version": "sha-abc1234"}
+
+
+async def test_homepage_and_privacy_policy(client, settings):
+    home = await client.get("/")
+    assert home.status == 200
+    body = await home.text()
+    assert "/configurar" in body and 'href="/privacy"' in body
+    assert "@fotos_bot" in body
+
+    settings.contact_email = "ana@example.com"
+    privacy = await client.get("/privacy")
+    assert privacy.status == 200
+    text = await privacy.text()
+    assert "drive.file" in text and "Limited Use" in text
+    assert "mailto:ana@example.com" in text
 
 
 async def test_unknown_or_used_state_is_rejected(client):

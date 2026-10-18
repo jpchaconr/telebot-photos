@@ -22,6 +22,16 @@ ENV DATABASE_PATH=/data/bot.db \
     TEMP_DIR=/data/tmp
 VOLUME ["/data"]
 EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s \
+    CMD python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('WEB_PORT', '8080'))"
+
+# Set by CI (.github/workflows/deploy.yml); reported by /health and in the startup log.
+ARG VERSION=dev
+ARG REVISION=unknown
+ENV APP_VERSION=${VERSION}
+LABEL org.opencontainers.image.source="https://github.com/jpchaconr/telebot-photos" \
+      org.opencontainers.image.description="Bot de Telegram que guarda la multimedia de cada grupo en su nube" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}"
+
 CMD ["telebot-photos"]

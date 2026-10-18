@@ -39,63 +39,24 @@ El pie de foto se guarda como descripción del archivo en Drive y OneDrive, y co
 
 ## Puesta en marcha
 
-Necesitas un servidor con Docker y Docker Compose, un dominio que apunte a él y los puertos 80 y 443 abiertos (para el HTTPS de los callbacks OAuth).
+**La guía completa está en [DEPLOY.md](DEPLOY.md)**: elegir VPS, dominio gratuito con DuckDNS, Google Drive, OneDrive, despliegue automático, copias de seguridad y problemas frecuentes.
 
-### 1. Crear el bot
-
-1. Habla con [@BotFather](https://t.me/BotFather), usa `/newbot` y guarda el token.
-2. **Desactiva el privacy mode**: `/setprivacy` → elige el bot → `Disable`. Sin esto el bot no ve las fotos que se envían en el grupo. La alternativa es hacerlo administrador en cada grupo.
-
-### 2. Credenciales del servidor local de la Bot API
-
-1. Entra en <https://my.telegram.org>, ve a *API development tools* y crea una aplicación.
-2. Copia el `api_id` y el `api_hash`.
-3. Desconecta el bot de la API en la nube, **una sola vez**, antes de arrancarlo con el servidor local:
-   ```bash
-   curl https://api.telegram.org/bot<TOKEN>/logOut
-   ```
-   Durante los 10 minutos siguientes no podrás volver a usarlo con la API en la nube.
-
-### 3. Google Drive (opcional)
-
-1. En [Google Cloud Console](https://console.cloud.google.com/) crea un proyecto y habilita la **Google Drive API**.
-2. Configura la **pantalla de consentimiento OAuth**: tipo *External*, y **publícala** (*In production*).
-   - En modo *Testing* los tokens caducan a los 7 días y solo pueden entrar los usuarios de prueba.
-   - El bot solo pide el permiso `drive.file`, que no requiere verificación de Google. Con él el bot solo ve los archivos y carpetas que él mismo crea.
-3. En *Credentials* crea un **OAuth client ID** de tipo *Web application* con este redirect URI:
-   ```
-   https://TU_DOMINIO/oauth/google/callback
-   ```
-4. Copia el *Client ID* y el *Client secret*.
-
-### 4. OneDrive (opcional)
-
-1. En [Azure Portal](https://portal.azure.com/) ve a **Microsoft Entra ID → App registrations → New registration**.
-2. En *Supported account types* elige **Accounts in any organizational directory and personal Microsoft accounts**.
-3. Añade un redirect URI de tipo **Web**:
-   ```
-   https://TU_DOMINIO/oauth/microsoft/callback
-   ```
-4. En *Certificates & secrets* crea un **client secret** y copia su *Value*. Caduca: apúntate cuándo renovarlo.
-5. Copia el *Application (client) ID*.
-
-Los permisos delegados (`Files.ReadWrite`, `offline_access`, `User.Read`) se piden al autorizar; no hace falta añadirlos a mano.
-
-### 5. Configurar y arrancar
+En resumen, en un VPS con Ubuntu o Debian (amd64 o arm64) y los puertos 80/443 abiertos:
 
 ```bash
-git clone <este repo> && cd telebot-photos
-cp .env.example .env
-# Genera la clave de cifrado y pégala en ENCRYPTION_KEY:
-python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-nano .env          # token, api_id/api_hash, dominio y credenciales OAuth
-docker compose up -d --build
-docker compose logs -f bot
+curl -fsSL https://raw.githubusercontent.com/jpchaconr/telebot-photos/HEAD/deploy/install.sh | sudo bash
 ```
 
-Comprueba que `https://TU_DOMINIO/health` responde `{"status": "ok"}`.
+El instalador:
 
-> ⚠️ **Guarda una copia de `ENCRYPTION_KEY`** y del volumen `bot-data` (la base de datos). Sin la clave, las configuraciones guardadas no se pueden leer y cada grupo tendría que configurarse de nuevo.
+- instala Docker y configura el cortafuegos;
+- te pide el token de [@BotFather](https://t.me/BotFather) (con el *privacy mode* desactivado), el `api_id`/`api_hash` de <https://my.telegram.org> y el dominio;
+- genera `.env` y la clave de cifrado;
+- arranca el bot, la Bot API local y Caddy (HTTPS automático).
+
+Se puede volver a ejecutar para añadir Google Drive u OneDrive. Las actualizaciones llegan con GitHub Actions (imagen en `ghcr.io/jpchaconr/telebot-photos`) o con `deploy/update.sh`.
+
+> ⚠️ **Guarda una copia de `.env`** (contiene `ENCRYPTION_KEY`). Sin la clave, las configuraciones guardadas no se pueden leer y cada grupo tendría que configurarse de nuevo.
 
 Si solo configuras Google o solo Microsoft, el otro proveedor simplemente no aparece. S3 está siempre disponible porque cada grupo introduce sus propias claves.
 
@@ -136,9 +97,13 @@ Usa claves limitadas a ese bucket, con permiso de escritura.
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | sí | Token de BotFather |
 | `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` | sí (Docker) | Para el servidor local de la Bot API |
-| `DOMAIN` | sí (Docker) | Dominio para el certificado HTTPS de Caddy |
-| `PUBLIC_BASE_URL` | sí | URL pública, base de los redirect URI (`https://DOMAIN`) |
-| `ENCRYPTION_KEY` | sí | Clave Fernet para cifrar credenciales |
+| `DOMAIN` | sí | Nombre público del servidor (p. ej. `nombre.duckdns.org`), para Caddy y los redirect URI |
+| `ACME_EMAIL` | sí (Docker) | Email de la cuenta de Let's Encrypt |
+| `PUBLIC_BASE_URL` | no | URL pública si no es `https://DOMAIN` |
+| `ENCRYPTION_KEY` | sí | Clave Fernet para cifrar credenciales (`openssl rand -base64 32 \| tr '+/' '-_'`) |
+| `DUCKDNS_TOKEN` | con DuckDNS | Lo usa `deploy/duckdns-update.sh` para mantener el dominio apuntando a la IP |
+| `CONTACT_EMAIL` | no | Email de contacto que aparece en `/privacy` |
+| `BOT_TAG`, `BOT_IMAGE` | no | Imagen del bot (`ghcr.io/jpchaconr/telebot-photos:latest` por defecto); `deploy/update.sh` cambia la etiqueta |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | no | Habilitan Google Drive |
 | `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_TENANT` | no | Habilitan OneDrive (`MS_TENANT=common` por defecto) |
 | `BOT_API_URL` | no | Servidor local de la Bot API; docker-compose ya lo define. Vacío = API en la nube (límite 20 MB) |
@@ -167,6 +132,12 @@ pytest          # incluye una prueba de extremo a extremo con una Bot API falsa 
 ruff check src tests && ruff format --check src tests
 ```
 
+Para construir la imagen en local en vez de descargarla de GHCR:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+```
+
 Para probar sin Docker, crea un `.env` y ejecuta `python -m telebot_photos`:
 
 - Sin `BOT_API_URL` se usa la API en la nube de Telegram, con el límite de 20 MB y sin `logOut`.
@@ -183,5 +154,15 @@ Estructura del código (`src/telebot_photos/`):
 | `worker.py` | Descarga desde Telegram, subida, reintentos, reacciones y avisos |
 | `storage/` | Backends `gdrive.py`, `onedrive.py` y `s3.py`, con subidas por partes |
 | `oauth/` | Cliente OAuth 2.0 y refresco de tokens |
-| `web.py` | Callbacks OAuth y `/health` |
+| `web.py` | Página principal, `/privacy`, callbacks OAuth y `/health` |
 | `db.py` | SQLite: configuración por chat, tokens de un solo uso y cola de subidas |
+
+Despliegue:
+
+| Fichero | Contenido |
+|---|---|
+| `deploy/install.sh` | Instalador del VPS (Docker, cortafuegos, `.env`, DuckDNS, arranque, usuario de despliegue) |
+| `deploy/update.sh` | Actualizar o volver a una versión (lo usa también GitHub Actions por SSH) |
+| `deploy/backup.sh`, `deploy/restore.sh` | Copias de seguridad de la base de datos |
+| `.github/workflows/ci.yml` | Lint, tests y comprobación de scripts y compose en cada push |
+| `.github/workflows/deploy.yml` | Imagen multi-arch en GHCR y despliegue en el VPS |

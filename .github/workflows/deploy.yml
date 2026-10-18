@@ -1,0 +1,143 @@
+# Builds the bot image for amd64 and arm64, publishes it to GHCR and deploys it to the VPS.
+#
+# - Runs on pushes to main, on v* tags and by hand (Actions → Deploy → Run workflow).
+# - The deploy job uses the "production" environment secrets (see DEPLOY.md). Without them
+#   it only publishes the image.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Desplegar en el VPS después de publicar la imagen"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  build:
+    name: Build and publish image
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: build-${{ github.ref }}
+      cancel-in-progress: true
+    outputs:
+      tag: ${{ steps.names.outputs.tag }}
+      image: ${{ steps.names.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Image name and tag
+        id: names
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ steps.names.outputs.image }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+      - name: Build and push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          build-args: |
+            VERSION=${{ github.ref_type == 'tag' && github.ref_name || steps.names.outputs.tag }}
+            REVISION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Check that the image can be pulled anonymously
+        env:
+          IMAGE: ${{ steps.names.outputs.image }}
+          TAG: ${{ steps.names.outputs.tag }}
+        run: |
+          repo=${IMAGE#ghcr.io/}
+          token=$(curl -fsS "https://ghcr.io/token?scope=repository:${repo}:pull&service=ghcr.io" |
+            sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${token}" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+            "https://ghcr.io/v2/${repo}/manifests/${TAG}")
+          if [ "$code" = 200 ]; then
+            echo "La imagen ${IMAGE}:${TAG} es pública."
+          else
+            echo "::warning title=La imagen no es pública::El servidor no podrá descargarla sin credenciales (HTTP ${code}). Hazla pública en Packages → telebot-photos → Package settings → Change visibility, o usa docker login en el VPS (ver DEPLOY.md)."
+          fi
+
+  deploy:
+    name: Deploy to the VPS
+    needs: build
+    if: github.event_name != 'workflow_dispatch' || inputs.deploy
+    runs-on: ubuntu-24.04
+    environment: production
+    permissions: {}
+    concurrency:
+      group: telebot-production
+      cancel-in-progress: false
+    steps:
+      - name: Deploy over SSH
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          if [ -z "$SSH_HOST" ] || [ -z "$SSH_PRIVATE_KEY" ] || [ -z "$SSH_KNOWN_HOSTS" ]; then
+            echo "::notice title=Imagen publicada sin desplegar::Faltan los secretos SSH del environment production (ver DEPLOY.md)."
+            exit 0
+          fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          # The key's forced command on the VPS runs deploy/update.sh with this tag.
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes -o ConnectTimeout=20 -p "${SSH_PORT:-22}" \
+            "${SSH_USER:-deploy}@${SSH_HOST}" "$TAG"
+      - name: Check /health
+        if: vars.PUBLIC_URL != ''
+        env:
+          URL: ${{ vars.PUBLIC_URL }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          for _ in $(seq 1 12); do
+            if curl -fsS --max-time 10 "${URL%/}/health" | grep -q "\"${TAG}\""; then
+              echo "El bot responde con la versión ${TAG}."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::${URL%/}/health no muestra la versión ${TAG}"
+          exit 1

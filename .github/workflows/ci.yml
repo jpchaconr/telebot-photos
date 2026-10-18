@@ -52,3 +52,7 @@ jobs:
           cp .env.example .env
           docker compose config --quiet
           docker compose -f docker-compose.yml -f docker-compose.build.yml config --quiet
+          export TELEGRAM_API_ID=1234567 TELEGRAM_API_HASH=0123456789abcdef0123456789abcdef
+          docker compose -f docker-compose.yml -f docker-compose.bot-api.yml config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.bot-api.yml \
+            -f docker-compose.build.yml config --quiet

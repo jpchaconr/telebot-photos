@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import logging
+import math
 from dataclasses import dataclass
 
-from telegram import Message, Update
+from telegram import Message, ReplyParameters, Update
+from telegram.error import TelegramError
 from telegram.ext import ContextTypes, MessageHandler, filters
 
 from ..db import NewJob
 from ..services import get_services
+
+log = logging.getLogger(__name__)
 
 MEDIA_FILTER = (
     filters.UpdateType.MESSAGE
@@ -76,6 +81,10 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     chat = await services.db.get_chat(message.chat_id)
     if chat is None or chat.paused:
         return
+    limit = services.settings.max_download_size
+    if limit is not None and info.file_size is not None and info.file_size > limit:
+        await warn_too_big(context, message, info.file_size, limit)
+        return
     queued = await services.db.enqueue_job(
         NewJob(
             chat_id=message.chat_id,
@@ -93,6 +102,26 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
     if queued:
         services.worker.notify()
+
+
+async def warn_too_big(
+    context: ContextTypes.DEFAULT_TYPE, message: Message, size: int, limit: int
+) -> None:
+    """Tell the group right away that a file can't be saved, instead of failing later."""
+    megabyte = 1024 * 1024
+    log.info("Skipping a %d byte file in chat %s: over the download limit", size, message.chat_id)
+    try:
+        await context.bot.send_message(
+            message.chat_id,
+            f"⚠️ No he guardado este archivo: pesa {math.ceil(size / megabyte)} MB y solo "
+            f"puedo descargar archivos de hasta {limit // megabyte} MB.",
+            reply_parameters=ReplyParameters(
+                message_id=message.message_id, allow_sending_without_reply=True
+            ),
+            disable_notification=True,
+        )
+    except TelegramError as exc:
+        log.warning("Could not warn chat %s about a big file: %s", message.chat_id, exc)
 
 
 def build_handlers() -> list:

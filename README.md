@@ -14,7 +14,7 @@ Cada grupo tiene su propia configuración: un grupo puede guardar en el Drive de
 Grupo ──foto/vídeo──▶ bot ──▶ cola persistente (SQLite)
                                    │
                          workers ◀─┘
-                           │ descarga (servidor local de la Bot API, hasta 2 GB)
+                           │ descarga de Telegram (hasta 20 MB, o 2 GB con la Bot API local)
                            │ sube a la nube configurada para ese grupo
                            └─▶ reacciona 👍 al mensaje (o avisa si falla)
 ```
@@ -23,7 +23,7 @@ Grupo ──foto/vídeo──▶ bot ──▶ cola persistente (SQLite)
 - **Credenciales cifradas** en la base de datos con `ENCRYPTION_KEY` (Fernet).
 - **Cola persistente** con reintentos y backoff exponencial: si el servidor se reinicia o la nube falla un rato, no se pierde nada.
 - **Sin duplicados**: el mismo archivo reenviado varias veces al grupo se guarda una sola vez.
-- Usa el **servidor local de la Bot API** para descargar archivos de hasta 2 GB; la API en la nube de Telegram limita a los bots a 20 MB.
+- **Archivos de hasta 20 MB** con la API de Telegram, o **hasta 2 GB** si añades el servidor local de la Bot API (el instalador lo pregunta). Con 20 MB, el bot avisa en el grupo de los archivos más grandes en vez de guardarlos.
 
 Los archivos se organizan por mes:
 
@@ -50,9 +50,9 @@ curl -fsSL https://raw.githubusercontent.com/jpchaconr/telebot-photos/HEAD/deplo
 El instalador:
 
 - instala Docker y configura el cortafuegos;
-- te pide el token de [@BotFather](https://t.me/BotFather) (con el *privacy mode* desactivado), el `api_id`/`api_hash` de <https://my.telegram.org> y el dominio;
+- te pide el token de [@BotFather](https://t.me/BotFather) (con el *privacy mode* desactivado), el tamaño máximo de archivo y el dominio. Con **20 MB** no hace falta nada más; con **2 GB** también pide el `api_id`/`api_hash` de <https://my.telegram.org>;
 - genera `.env` y la clave de cifrado;
-- arranca el bot, la Bot API local y Caddy (HTTPS automático).
+- arranca el bot y Caddy (HTTPS automático), y en el modo 2 GB también la Bot API local.
 
 Se puede volver a ejecutar para añadir Google Drive u OneDrive. Las actualizaciones llegan con GitHub Actions (imagen en `ghcr.io/jpchaconr/telebot-photos`) o con `deploy/update.sh`.
 
@@ -96,7 +96,9 @@ Usa claves limitadas a ese bucket, con permiso de escritura.
 | Variable | Obligatoria | Descripción |
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | sí | Token de BotFather |
-| `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` | sí (Docker) | Para el servidor local de la Bot API |
+| `TELEGRAM_BOT_API` | no | `cloud`: API de Telegram, archivos de hasta 20 MB. `local`: servidor local de la Bot API, hasta 2 GB. Para cambiarlo, vuelve a ejecutar el instalador (ver DEPLOY.md) |
+| `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` | con `local` | Para el servidor local de la Bot API |
+| `COMPOSE_FILE` | no | Ficheros de Docker Compose que se usan. Lo escribe el instalador: añade `docker-compose.bot-api.yml` (modo 2 GB) y `docker-compose.build.yml` (imagen construida en el servidor) |
 | `DOMAIN` | sí | Nombre público del servidor (p. ej. `nombre.duckdns.org`), para Caddy y los redirect URI |
 | `ACME_EMAIL` | sí (Docker) | Email de la cuenta de Let's Encrypt |
 | `PUBLIC_BASE_URL` | no | URL pública si no es `https://DOMAIN` |
@@ -106,7 +108,7 @@ Usa claves limitadas a ese bucket, con permiso de escritura.
 | `BOT_TAG`, `BOT_IMAGE` | no | Imagen del bot (`ghcr.io/jpchaconr/telebot-photos:latest` por defecto); `deploy/update.sh` cambia la etiqueta |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | no | Habilitan Google Drive |
 | `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_TENANT` | no | Habilitan OneDrive (`MS_TENANT=common` por defecto) |
-| `BOT_API_URL` | no | Servidor local de la Bot API; docker-compose ya lo define. Vacío = API en la nube (límite 20 MB) |
+| `BOT_API_URL` | no | Servidor local de la Bot API; `docker-compose.bot-api.yml` ya lo define. Vacío = API en la nube (límite 20 MB) |
 | `TIMEZONE` | no | Zona horaria de nombres y carpetas (`UTC` por defecto) |
 | `UPLOAD_CONCURRENCY` | no | Subidas simultáneas (3) |
 | `MAX_ATTEMPTS` | no | Reintentos antes de marcar un archivo como fallido (5) |
@@ -119,7 +121,7 @@ Usa claves limitadas a ese bucket, con permiso de escritura.
 ## Limitaciones
 
 - Solo se guarda lo que se envía **mientras el bot está en el grupo**: la API de bots no permite leer el historial anterior.
-- Tamaño máximo de 2 GB por archivo, que es el límite de Telegram para bots con servidor local.
+- Tamaño máximo por archivo: 20 MB con la API de Telegram, o 2 GB con el servidor local de la Bot API. Son los límites de Telegram para bots.
 - Los stickers no se guardan, y editar un mensaje para cambiar su archivo no actualiza la copia guardada.
 - Para conectar Google Drive u OneDrive, `PUBLIC_BASE_URL` tiene que ser accesible desde el navegador de quien autoriza.
 
@@ -137,6 +139,8 @@ Para construir la imagen en local en vez de descargarla de GHCR:
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ```
+
+Añade `-f docker-compose.bot-api.yml` (después de `docker-compose.yml`) para el modo de 2 GB.
 
 Para probar sin Docker, crea un `.env` y ejecuta `python -m telebot_photos`:
 
@@ -161,6 +165,8 @@ Despliegue:
 
 | Fichero | Contenido |
 |---|---|
+| `docker-compose.yml` | Bot y Caddy: archivos de hasta 20 MB |
+| `docker-compose.bot-api.yml` | Añade el servidor local de la Bot API: archivos de hasta 2 GB |
 | `deploy/install.sh` | Instalador del VPS (Docker, cortafuegos, `.env`, DuckDNS, arranque, usuario de despliegue) |
 | `deploy/update.sh` | Actualizar o volver a una versión (lo usa también GitHub Actions por SSH) |
 | `deploy/backup.sh`, `deploy/restore.sh` | Copias de seguridad de la base de datos |

@@ -8,16 +8,18 @@ Esta guía instala el bot en un servidor en la nube (VPS) con un **dominio gratu
                                                                    │
                                           ssh (clave limitada)     ▼
   Telegram ◀──▶ telegram-bot-api ◀──▶ bot ◀── Caddy (HTTPS) ◀── https://NOMBRE.duckdns.org
-                (archivos ≤ 2 GB)      │                           /, /privacy, /oauth/…
+                (solo modo 2 GB)       │                           /, /privacy, /oauth/…
                                        └──▶ Google Drive · OneDrive · S3 (lo elige cada grupo)
 ```
+
+En el modo de **20 MB** (el recomendado) no hay `telegram-bot-api`: el bot descarga directamente de la API de Telegram. El modo de **2 GB** añade ese servidor local; lo eliges al instalar (ver [apartado 3](#3-crear-el-bot-de-telegram)).
 
 **Resumen**
 
 1. Crear un VPS con Ubuntu 24.04 y abrir los puertos 80 y 443.
 2. Crear el subdominio en DuckDNS.
 3. Crear el bot en Telegram.
-4. Ejecutar el instalador.
+4. Ejecutar el instalador y elegir el tamaño máximo de archivo: 20 MB o 2 GB.
 5. (Opcional) Conectar Google Drive y OneDrive.
 6. (Opcional) Activar el despliegue automático.
 
@@ -27,8 +29,8 @@ Esta guía instala el bot en un servidor en la nube (VPS) con un **dominio gratu
 
 **Tamaño**
 
-- **Mínimo**: 1 vCPU, 1 GB de RAM y 25 GB de disco. El instalador añade 2 GB de swap.
-- **Recomendado**: 2 vCPU, 2–4 GB de RAM y 40 GB de disco o más, si se envían vídeos de 1–2 GB.
+- **Archivos de hasta 20 MB**: 1 vCPU, 1 GB de RAM y 25 GB de disco bastan. El instalador añade 2 GB de swap.
+- **Archivos de hasta 2 GB**: funciona con lo mismo, pero mejor 2 vCPU, 2–4 GB de RAM y 40 GB de disco o más si se envían vídeos de 1–2 GB.
 
 Cada archivo pasa entero por el disco antes de subirse. El tráfico mensual será más o menos el doble del volumen de fotos y vídeos: entra desde Telegram y sale hacia la nube.
 
@@ -75,7 +77,18 @@ Si más adelante compras un dominio, el cambio es sencillo: ver *Pasar a un domi
 
 1. En [@BotFather](https://t.me/BotFather): `/newbot` y guarda el **token**.
 2. **Desactiva el privacy mode**: `/setprivacy` → tu bot → **Disable**. Si no, el bot no ve las fotos de los grupos.
-3. En <https://my.telegram.org> → *API development tools*, crea una aplicación y anota el **api_id** y el **api_hash**. Los usa el servidor local de la Bot API, que permite archivos de hasta 2 GB.
+3. **Solo para archivos de hasta 2 GB**: en <https://my.telegram.org> → *API development tools*, crea una aplicación y anota el **api_id** y el **api_hash**. Los usa el servidor local de la Bot API.
+
+**¿Archivos de hasta 20 MB o de hasta 2 GB?** El instalador te lo pregunta:
+
+| | Hasta 20 MB (recomendado) | Hasta 2 GB |
+|---|---|---|
+| Cómo descarga | API de Telegram | Servidor local de la Bot API (un contenedor más) |
+| Qué necesitas | Solo el token | El token, el `api_id` y el `api_hash` |
+| VPS | 1 GB de RAM y 25 GB de disco | Mejor 2 GB de RAM y 40 GB de disco |
+| Qué no se guarda | Vídeos largos (a partir de 1–3 minutos, según la calidad), vídeos enviados "como archivo" y documentos grandes. El bot avisa en el grupo | Nada por debajo de 2 GB |
+
+Las fotos, las notas de voz, los GIF y los vídeos cortos se guardan igual en los dos. Puedes cambiar de modo más adelante (apartado 8, *Cambiar el tamaño máximo*).
 
 ## 4. Instalar
 
@@ -91,13 +104,14 @@ El instalador:
 2. Configura el cortafuegos: `ufw` con SSH, 80 y 443. En Oracle usa reglas de iptables, porque allí no se debe activar ufw.
 3. Descarga el proyecto en `/opt/telebot-photos`.
 4. Te pide:
-   - el token del bot (lo comprueba), el `api_id` y el `api_hash`;
+   - el token del bot (lo comprueba);
+   - el tamaño máximo de archivo: **1 (20 MB)** o **2 (2 GB)**; con 2 GB, también el `api_id` y el `api_hash`;
    - el dominio: elige **1 (DuckDNS)**, escribe el subdominio y el token;
    - un email para Let's Encrypt y, si quieres, un email de contacto para la página de privacidad;
    - la zona horaria.
 5. Genera `ENCRYPTION_KEY` y escribe `/opt/telebot-photos/.env` con permisos `600`.
 6. Apunta DuckDNS a la IP del VPS y espera a que el DNS responda.
-7. Desconecta el bot de la API en la nube de Telegram (`logOut`, una sola vez).
+7. Solo con 2 GB: desconecta el bot de la API en la nube de Telegram (`logOut`, una sola vez), porque lo va a atender el servidor local.
 8. Descarga la imagen del bot y arranca los servicios. Si la imagen aún no está publicada en GHCR, la construye en el propio servidor.
 9. Espera al certificado HTTPS y te muestra los datos para las consolas de Google y Microsoft.
 10. Te ofrece conectar Google Drive y OneDrive (puedes hacerlo más tarde) y preparar el despliegue automático.
@@ -199,7 +213,7 @@ Todo se hace desde `/opt/telebot-photos`:
 
 | Qué | Comando |
 |---|---|
-| Ver logs | `sudo docker compose logs -f bot` (o `caddy`, `telegram-bot-api`) |
+| Ver logs | `sudo docker compose logs -f bot` (o `caddy`, y `telegram-bot-api` en el modo 2 GB) |
 | Estado | `sudo docker compose ps` |
 | Actualizar a la última imagen | `sudo deploy/update.sh latest` |
 | Volver a una versión anterior | `sudo deploy/update.sh sha-1a2b3c4`. Las etiquetas están en *Packages* o en las ejecuciones de *Actions*. |
@@ -240,8 +254,17 @@ Todo se hace desde `/opt/telebot-photos`:
   5. **GitHub**: si definiste la variable `PUBLIC_URL` en el environment `production`, cámbiala. Los secretos SSH usan la IP y no cambian.
 
   El subdominio de DuckDNS puedes dejarlo o borrarlo; `DUCKDNS_TOKEN` en `.env` deja de usarse. Con dominio propio también puedes verificarlo en Google Search Console: si algún día pides la verificación de marca, Google podrá mostrar el nombre del bot en la pantalla de permiso.
+- **Cambiar el tamaño máximo** (de 20 MB a 2 GB o al revés): cambia `TELEGRAM_BOT_API` en `.env` y vuelve a ejecutar el instalador.
+  ```bash
+  sudo nano /opt/telebot-photos/.env      # TELEGRAM_BOT_API='local' (2 GB) o 'cloud' (20 MB)
+  sudo bash /opt/telebot-photos/deploy/install.sh
+  ```
+  - **A 2 GB**: te pide el `api_id` y el `api_hash` (apartado 3), hace el `logOut` y arranca el servidor local.
+  - **A 20 MB**: quita el servidor local. Telegram no acepta el bot en su API hasta 10 minutos después del `logOut`; si cambias justo después de instalar, el instalador espera lo que falte. Los archivos pendientes se vuelven a descargar de Telegram, y los de más de 20 MB fallan con un aviso en el grupo. Para liberar el espacio del servidor local: `sudo docker volume rm telebot-photos_bot-api-data`.
+
+  Hazlo siempre con el instalador: `update.sh` no cambia de modo, y el servidor local necesita el `logOut` antes de arrancar.
 - **Avisos de caducidad del certificado**: Let's Encrypt ya no los envía por email y Caddy renueva solo. Si quieres un aviso cuando algo falle, añade `https://TU_DOMINIO/health` a un monitor gratuito (por ejemplo UptimeRobot).
-- **Disco**: los archivos de los trabajos que se están reintentando se quedan en el volumen `telebot-photos_bot-api-data` hasta que terminan. Por ejemplo, si un grupo tiene que reconectar su cuenta y sigue enviando vídeos. `/estado` en el grupo muestra los pendientes.
+- **Disco** (modo 2 GB): los archivos de los trabajos que se están reintentando se quedan en el volumen `telebot-photos_bot-api-data` hasta que terminan. Por ejemplo, si un grupo tiene que reconectar su cuenta y sigue enviando vídeos. `/estado` en el grupo muestra los pendientes.
 - **Endurecer SSH**: cuando hayas comprobado que entras con tu clave, desactiva las contraseñas. Hazlo en un fichero propio, porque en muchas imágenes cloud `/etc/ssh/sshd_config.d/50-cloud-init.conf` las vuelve a activar:
   ```bash
   printf 'PasswordAuthentication no\nPermitRootLogin prohibit-password\n' | sudo tee /etc/ssh/sshd_config.d/00-hardening.conf
@@ -263,6 +286,7 @@ Todo se hace desde `/opt/telebot-photos`:
 | OneDrive deja de funcionar en todos los grupos | Ha caducado el client secret de Microsoft: renuévalo (paso 6). |
 | `update.sh`: `denied` o `unauthorized` al descargar la imagen | El paquete de GHCR es privado: hazlo público o inicia sesión como el usuario que despliega (paso 7). |
 | El bot no responde en los grupos | El *privacy mode* sigue activado en BotFather (`/setprivacy` → Disable) o el bot no está en el grupo. Mira `sudo docker compose logs bot`. |
-| El log del bot dice "The Bot API is not reachable yet" | El servidor local de la Bot API está arrancando, o `TELEGRAM_API_ID`/`TELEGRAM_API_HASH` son incorrectos: revisa `sudo docker compose logs telegram-bot-api`. |
+| El bot responde "No he guardado este archivo: pesa X MB…" | Estás en el modo de 20 MB y el archivo es más grande. Un vídeo enviado sin marcar "como archivo" se comprime y a veces cabe; si no, cambia a 2 GB (apartado 8, *Cambiar el tamaño máximo*). |
+| El log del bot dice "The Bot API is not reachable yet" | En el modo 2 GB: el servidor local de la Bot API está arrancando, o `TELEGRAM_API_ID`/`TELEGRAM_API_HASH` son incorrectos. Revisa `sudo docker compose logs telegram-bot-api`. |
 | Oracle: "Out of host capacity" al crear la instancia | No hay hueco en esa zona: prueba otro *availability domain* o vuelve a intentarlo más tarde. |
 | DuckDNS no resuelve | DuckDNS ha tenido caídas puntuales. Caddy renueva los certificados con semanas de margen, así que una caída corta no los afecta, pero durante la caída no funcionan las autorizaciones OAuth. |

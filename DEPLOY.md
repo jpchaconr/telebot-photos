@@ -69,6 +69,8 @@ Opciones orientativas (precios de octubre de 2026; comprueba stock y precio al c
 - Su cupo de Let's Encrypt es compartido y se agotó varias veces en 2026.
 - Si cambia la IP del servidor, cambia el nombre.
 
+Si más adelante compras un dominio, el cambio es sencillo: ver *Pasar a un dominio propio* en el apartado 8.
+
 ## 3. Crear el bot de Telegram
 
 1. En [@BotFather](https://t.me/BotFather): `/newbot` y guarda el **token**.
@@ -223,6 +225,21 @@ Todo se hace desde `/opt/telebot-photos`:
   3. Copia tu copia de seguridad a `/opt/telebot-photos/backups/` y ejecuta `sudo deploy/restore.sh backups/bot-FECHA.db`.
 
   Sin la clave original, los grupos tendrían que volver a usar `/configurar`.
+- **Pasar a un dominio propio** (por ejemplo, si compras `midominio.com`). Todo sale de `DOMAIN` en `.env`: no se migran datos, los grupos conectados siguen funcionando (sus tokens no dependen del dominio) y el corte es de unos segundos.
+  1. **DNS**: crea un registro **A** `bot.midominio.com` → IP del VPS. En Cloudflare, déjalo en *DNS only* (nube gris) para que Caddy obtenga el certificado sin problemas.
+  2. **Servidor**: cambia el dominio y vuelve a ejecutar el instalador. Comprobará el DNS, reiniciará el bot y Caddy (que pide el certificado nuevo) y quitará el cron de DuckDNS:
+     ```bash
+     sudo nano /opt/telebot-photos/.env      # DOMAIN='bot.midominio.com'
+     sudo bash /opt/telebot-photos/deploy/install.sh
+     ```
+  3. **Google Auth Platform**:
+     - En *Branding*, añade `midominio.com` a *Authorized domains* y cambia la página principal y la de privacidad a `https://bot.midominio.com/` y `https://bot.midominio.com/privacy`.
+     - En *Clients*, añade el redirect `https://bot.midominio.com/oauth/google/callback`.
+     - Cuando compruebes que `/configurar` funciona, quita lo de DuckDNS.
+  4. **Microsoft Entra**: en *Authentication*, **sustituye** el redirect URI por `https://bot.midominio.com/oauth/microsoft/callback`. No lo añadas junto al antiguo: en apps multiinquilino sin editor verificado, Microsoft no admite redirects de dominios raíz distintos.
+  5. **GitHub**: si definiste la variable `PUBLIC_URL` en el environment `production`, cámbiala. Los secretos SSH usan la IP y no cambian.
+
+  El subdominio de DuckDNS puedes dejarlo o borrarlo; `DUCKDNS_TOKEN` en `.env` deja de usarse. Con dominio propio también puedes verificarlo en Google Search Console: si algún día pides la verificación de marca, Google podrá mostrar el nombre del bot en la pantalla de permiso.
 - **Avisos de caducidad del certificado**: Let's Encrypt ya no los envía por email y Caddy renueva solo. Si quieres un aviso cuando algo falle, añade `https://TU_DOMINIO/health` a un monitor gratuito (por ejemplo UptimeRobot).
 - **Disco**: los archivos de los trabajos que se están reintentando se quedan en el volumen `telebot-photos_bot-api-data` hasta que terminan. Por ejemplo, si un grupo tiene que reconectar su cuenta y sigue enviando vídeos. `/estado` en el grupo muestra los pendientes.
 - **Endurecer SSH**: cuando hayas comprobado que entras con tu clave, desactiva las contraseñas. Hazlo en un fichero propio, porque en muchas imágenes cloud `/etc/ssh/sshd_config.d/50-cloud-init.conf` las vuelve a activar:

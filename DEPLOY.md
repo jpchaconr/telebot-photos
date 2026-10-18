@@ -151,7 +151,7 @@ Necesitas una cuenta de Azure o un directorio de Microsoft Entra; darse de alta 
 2. Copia el **Application (client) ID**.
 3. **Certificates & secrets → New client secret**. Elige la caducidad (máximo 24 meses) y copia el **Value**, que solo se muestra una vez.
    - **Apunta en tu calendario cuándo caduca**: ese día dejan de funcionar todas las conexiones de OneDrive.
-   - Para renovarlo: crea un secret nuevo y vuelve a ejecutar el instalador tras borrar `MS_CLIENT_SECRET` de `.env`.
+   - Para renovarlo: crea un secret nuevo, deja vacía la línea `MS_CLIENT_SECRET=''` en `/opt/telebot-photos/.env` (`sudo nano /opt/telebot-photos/.env`) y vuelve a ejecutar el instalador. Solo te pedirá el secret nuevo y reiniciará el bot. Con Google se renueva igual, vaciando `GOOGLE_CLIENT_SECRET`.
 4. Vuelve a ejecutar el instalador y pega el ID y el secret cuando pregunte por OneDrive.
 
 Los permisos (`Files.ReadWrite`, `offline_access`, `User.Read`) se piden al autorizar. Las cuentas personales funcionan siempre. Algunas cuentas de empresa necesitan que su administrador apruebe la app.
@@ -180,13 +180,15 @@ El workflow `.github/workflows/deploy.yml`:
 **Lanzarlo**: *Actions → Deploy → Run workflow*.
 
 - La primera vez, comprueba que el paquete es **público**. El workflow avisa si no lo es. También puedes verlo en tu perfil → *Packages* → `telebot-photos`.
-- Si no lo es: *Package settings → Change visibility → Public*. Es irreversible. La alternativa es iniciar sesión en el VPS con `docker login ghcr.io` y un token *classic* con permiso `read:packages`.
+- Si no lo es, el despliegue de esa primera ejecución falla (el bot sigue con la versión anterior). Arréglalo y vuelve a lanzarlo:
+  - opción recomendada: *Package settings → Change visibility → Public*. Es irreversible;
+  - alternativa: iniciar sesión en GHCR **como el usuario que despliega**, con un token *classic* que tenga permiso `read:packages`: `sudo -u deploy -H docker login ghcr.io -u TU_USUARIO_DE_GITHUB`. Si además actualizas a mano con `sudo`, repítelo con `sudo docker login ghcr.io -u TU_USUARIO_DE_GITHUB`.
 - Sin los secretos SSH, el workflow solo publica la imagen y lo indica.
 
 **A partir de entonces**
 
 - Los pushes a `main` y las etiquetas `v*` despliegan solos.
-- Hoy el repositorio no tiene rama `main`: créala desde la rama actual y márcala como predeterminada en *Settings → General → Default branch*.
+- Hoy el repositorio no tiene rama `main`: créala desde la rama actual y márcala como predeterminada en *Settings → General → Default branch*. El servidor sigue siempre la rama predeterminada del repositorio, así que en el siguiente despliegue pasará solo a `main`.
 - Mientras tanto, despliega a mano con *Run workflow*.
 
 ## 8. Operación diaria
@@ -195,39 +197,55 @@ Todo se hace desde `/opt/telebot-photos`:
 
 | Qué | Comando |
 |---|---|
-| Ver logs | `docker compose logs -f bot` (o `caddy`, `telegram-bot-api`) |
-| Estado | `docker compose ps` |
+| Ver logs | `sudo docker compose logs -f bot` (o `caddy`, `telegram-bot-api`) |
+| Estado | `sudo docker compose ps` |
 | Actualizar a la última imagen | `sudo deploy/update.sh latest` |
 | Volver a una versión anterior | `sudo deploy/update.sh sha-1a2b3c4`. Las etiquetas están en *Packages* o en las ejecuciones de *Actions*. |
-| Reiniciar | `docker compose restart bot` |
+| Reiniciar | `sudo docker compose restart bot` (no relee `.env`; tras editarlo usa `sudo docker compose up -d`) |
 | Copia de seguridad ahora | `sudo deploy/backup.sh` → `backups/bot-FECHA.db` (se guardan las 14 últimas) |
-| Restaurar una copia | `sudo deploy/restore.sh backups/bot-FECHA.db` |
-| Espacio en disco | `df -h /` y `docker system df` |
+| Restaurar una copia | `sudo deploy/restore.sh backups/bot-FECHA.db` (con la misma `ENCRYPTION_KEY` con la que se hizo) |
+| Espacio en disco | `df -h /` y `sudo docker system df` |
 
 **Más detalles**
 
-- **Actualizaciones**: `update.sh` hace una copia, descarga la imagen y reinicia. **Si el bot no arranca, vuelve solo a la versión anterior.**
+- **Actualizaciones**: `update.sh` hace una copia de seguridad, actualiza los ficheros del repositorio, descarga la imagen y reinicia. **Si el bot no arranca, vuelve solo a la imagen que estaba funcionando.** Después borra las imágenes antiguas para no llenar el disco; volver a una versión anterior la descarga otra vez de GHCR.
 - **Copias de seguridad**: se hacen con `VACUUM INTO` dentro del contenedor, porque copiar `bot.db` a mano con el bot en marcha puede perder datos. Las copias guardan las credenciales cifradas: guárdalas junto con una copia de `.env` en otro sitio, pero no en el mismo.
 - **Si cambia la IP del servidor**:
-  - Con DuckDNS se actualiza sola en menos de una hora (o al momento con `deploy/duckdns-update.sh`).
-  - Con sslip.io cambia el dominio: hay que cambiar `DOMAIN` en `.env` y los redirect URIs en Google y Microsoft. Las conexiones ya hechas siguen funcionando.
+  - Con DuckDNS se actualiza sola en menos de una hora (o al momento con `sudo deploy/duckdns-update.sh`).
+  - Con sslip.io cambia el dominio:
+    1. cambia `DOMAIN` en `.env` y aplica el cambio con `sudo docker compose up -d` (`restart` no basta);
+    2. actualiza los redirect URIs en Google y Microsoft, y en Google también la página principal, la de privacidad y el dominio autorizado.
+
+    Las conexiones ya hechas siguen funcionando.
+- **Mover el bot a otro servidor (o recuperarlo tras perder el VPS)**:
+  1. Ejecuta el instalador en el servidor nuevo como siempre. Puedes reutilizar el mismo subdominio de DuckDNS: el instalador lo apunta a la nueva IP.
+  2. Pon tu `ENCRYPTION_KEY` guardada en `/opt/telebot-photos/.env` en lugar de la generada (`sudo nano /opt/telebot-photos/.env`, entre comillas simples).
+  3. Copia tu copia de seguridad a `/opt/telebot-photos/backups/` y ejecuta `sudo deploy/restore.sh backups/bot-FECHA.db`.
+
+  Sin la clave original, los grupos tendrían que volver a usar `/configurar`.
+- **Avisos de caducidad del certificado**: Let's Encrypt ya no los envía por email y Caddy renueva solo. Si quieres un aviso cuando algo falle, añade `https://TU_DOMINIO/health` a un monitor gratuito (por ejemplo UptimeRobot).
 - **Disco**: los archivos de los trabajos que se están reintentando se quedan en el volumen `telebot-photos_bot-api-data` hasta que terminan. Por ejemplo, si un grupo tiene que reconectar su cuenta y sigue enviando vídeos. `/estado` en el grupo muestra los pendientes.
-- **Endurecer SSH**: cuando hayas comprobado que entras con tu clave, desactiva las contraseñas en `/etc/ssh/sshd_config` (`PasswordAuthentication no`, `PermitRootLogin prohibit-password`) y ejecuta `sudo systemctl reload ssh`.
+- **Endurecer SSH**: cuando hayas comprobado que entras con tu clave, desactiva las contraseñas. Hazlo en un fichero propio, porque en muchas imágenes cloud `/etc/ssh/sshd_config.d/50-cloud-init.conf` las vuelve a activar:
+  ```bash
+  printf 'PasswordAuthentication no\nPermitRootLogin prohibit-password\n' | sudo tee /etc/ssh/sshd_config.d/00-hardening.conf
+  sudo sshd -T | grep -Ei '^(passwordauthentication|permitrootlogin)'   # comprueba el resultado
+  sudo systemctl reload ssh
+  ```
 - **No borres los volúmenes**: nunca uses `docker compose down -v`. `telebot-photos_bot-data` es la base de datos, y `telebot-photos_caddy-data` guarda los certificados; repetirlos consume cupo de Let's Encrypt.
 
 ## 9. Problemas frecuentes
 
 | Síntoma | Causa y solución |
 |---|---|
-| No sale el certificado HTTPS (`docker compose logs caddy` muestra errores de ACME) | Los puertos 80/443 están cerrados en el cortafuegos del proveedor, o el DNS no apunta a la IP. Comprueba con `curl -I http://TU_DOMINIO` desde fuera. En Oracle, revisa la *Security List*. |
+| No sale el certificado HTTPS (`sudo docker compose logs caddy` muestra errores de ACME) | Los puertos 80/443 están cerrados en el cortafuegos del proveedor, o el DNS no apunta a la IP. Comprueba con `curl -I http://TU_DOMINIO` desde fuera. En Oracle, revisa la *Security List*. |
 | `too many certificates already issued` | Has pedido demasiados certificados (pasa con sslip.io compartido o si se borró `caddy-data`). Usa DuckDNS o espera unos días. |
 | Google: `redirect_uri_mismatch` | El redirect URI del cliente no coincide **exactamente** con `https://TU_DOMINIO/oauth/google/callback`: https, sin barra final, mismo dominio. Los cambios en Google tardan unos minutos. |
 | Google: "Invalid domain" al añadir el dominio autorizado | Pon el dominio completo (`fotosfamilia.duckdns.org`). Con sslip.io, si Google lo rechaza, cambia a DuckDNS. |
 | Drive deja de funcionar a los 7 días | La app de Google está en *Testing*: publícala (*Audience → Publish app*) y vuelve a usar `/configurar`. |
 | Microsoft: `AADSTS50011` | El redirect URI no está registrado como plataforma **Web** o no coincide exactamente. |
-| OneDrive deja de funcionar en todos los grupos | Ha caducado el client secret de Microsoft: crea uno nuevo (paso 6). |
-| `update.sh`: `denied` o `unauthorized` al descargar la imagen | El paquete de GHCR es privado: hazlo público o usa `docker login ghcr.io` (paso 7). |
-| El bot no responde en los grupos | El *privacy mode* sigue activado en BotFather (`/setprivacy` → Disable) o el bot no está en el grupo. Mira `docker compose logs bot`. |
-| El log del bot dice "The Bot API is not reachable yet" | El servidor local de la Bot API está arrancando, o `TELEGRAM_API_ID`/`TELEGRAM_API_HASH` son incorrectos: revisa `docker compose logs telegram-bot-api`. |
+| OneDrive deja de funcionar en todos los grupos | Ha caducado el client secret de Microsoft: renuévalo (paso 6). |
+| `update.sh`: `denied` o `unauthorized` al descargar la imagen | El paquete de GHCR es privado: hazlo público o inicia sesión como el usuario que despliega (paso 7). |
+| El bot no responde en los grupos | El *privacy mode* sigue activado en BotFather (`/setprivacy` → Disable) o el bot no está en el grupo. Mira `sudo docker compose logs bot`. |
+| El log del bot dice "The Bot API is not reachable yet" | El servidor local de la Bot API está arrancando, o `TELEGRAM_API_ID`/`TELEGRAM_API_HASH` son incorrectos: revisa `sudo docker compose logs telegram-bot-api`. |
 | Oracle: "Out of host capacity" al crear la instancia | No hay hueco en esa zona: prueba otro *availability domain* o vuelve a intentarlo más tarde. |
 | DuckDNS no resuelve | DuckDNS ha tenido caídas puntuales. Caddy renueva los certificados con semanas de margen, así que una caída corta no los afecta, pero durante la caída no funcionan las autorizaciones OAuth. |

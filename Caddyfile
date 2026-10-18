@@ -1,5 +1,5 @@
 {
-	# Let's Encrypt account e-mail (expiry notices; also enables the ZeroSSL fallback).
+	# ACME account contact (Let's Encrypt; also enables the ZeroSSL fallback).
 	email {$ACME_EMAIL}
 }
 

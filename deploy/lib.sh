@@ -93,6 +93,10 @@ public_ipv4() {
 # image_is_public IMAGE TAG -> succeeds if the GHCR image can be pulled anonymously.
 image_is_public() {
 	local repo=${1#ghcr.io/} tag=$2 token code
+	if [[ $1 != ghcr.io/* ]]; then # another registry (BOT_IMAGE): just try to pull it
+		docker pull --quiet "$1:$tag" >/dev/null 2>&1
+		return
+	fi
 	token=$(curl -fsS --max-time 15 \
 		"https://ghcr.io/token?scope=repository:${repo}:pull&service=ghcr.io" 2>/dev/null |
 		sed -n 's/.*"token":"\([^"]*\)".*/\1/p') || return 1
@@ -102,6 +106,43 @@ image_is_public() {
 		-H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json' \
 		"https://ghcr.io/v2/${repo}/manifests/${tag}") || return 1
 	[[ $code == 200 ]]
+}
+
+# git_as_owner ARGS... -> git in $ROOT, run as the user that owns the checkout. Running it as
+# root in a checkout owned by the deploy user would leave root-owned files in .git and
+# break every later "git pull" made by GitHub Actions.
+git_as_owner() {
+	local owner home
+	owner=$(stat -c %U "$ROOT")
+	if [[ $EUID -eq 0 && $owner != root ]]; then
+		home=$(getent passwd "$owner" | cut -d: -f6)
+		runuser -u "$owner" -- env HOME="$home" git -C "$ROOT" "$@"
+	else
+		git -c safe.directory="$ROOT" -C "$ROOT" "$@"
+	fi
+}
+
+# repo_update -> fast-forward the checkout. It follows TELEBOT_REF from .env when set (a
+# branch, or a tag that stays pinned), otherwise the repository's default branch, so the
+# server keeps up when the default branch changes (e.g. to "main").
+repo_update() {
+	local ref current
+	[[ -d $ROOT/.git ]] || return 0
+	git_as_owner fetch --quiet --prune --tags origin || return 1
+	ref=$(env_get "$ROOT/.env" TELEBOT_REF)
+	if [[ -z $ref ]]; then
+		git_as_owner remote set-head origin --auto >/dev/null 2>&1 || true
+		ref=$(git_as_owner symbolic-ref --quiet --short refs/remotes/origin/HEAD) || return 1
+		ref=${ref#origin/}
+	elif ! git_as_owner show-ref --verify --quiet "refs/remotes/origin/$ref"; then
+		return 0 # a tag or a commit: pinned on purpose
+	fi
+	current=$(git_as_owner branch --show-current)
+	if [[ $current != "$ref" ]]; then
+		git_as_owner checkout --quiet -B "$ref" --track "origin/$ref" || return 1
+		info "El servidor sigue ahora la rama $ref"
+	fi
+	git_as_owner merge --ff-only --quiet "origin/$ref"
 }
 
 # uses_local_build -> true when .env selects docker-compose.build.yml via COMPOSE_FILE.

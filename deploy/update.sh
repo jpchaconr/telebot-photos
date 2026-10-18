@@ -36,6 +36,17 @@ previous_tag=${previous_tag:-latest}
 previous_compose_file=$(env_get "$ENV_FILE" COMPOSE_FILE)
 image=$(env_get "$ENV_FILE" BOT_IMAGE)
 image=${image:-$BOT_IMAGE_DEFAULT}
+# The image the bot runs now. "pull latest" or a local rebuild re-points the same tag to the
+# new image, so a rollback has to re-tag this id; restoring the tag name alone is not enough.
+previous_image_id=$(docker compose images -q bot 2>/dev/null | head -n 1) || true
+
+bot_image_ref() { # the image reference compose uses for the bot with the current .env
+	if uses_local_build; then
+		echo telebot-photos:local
+	else
+		echo "${image}:$(env_get "$ENV_FILE" BOT_TAG)"
+	fi
+}
 
 restore_previous() {
 	warn "Volviendo a la versión anterior ($previous_tag)…"
@@ -45,37 +56,55 @@ restore_previous() {
 	else
 		env_unset "$ENV_FILE" COMPOSE_FILE
 	fi
+	if [[ -n $previous_image_id ]]; then
+		docker tag "$previous_image_id" "$(bot_image_ref)" || true
+	fi
 	docker compose up -d --remove-orphans --wait --wait-timeout 180 ||
 		warn "La versión anterior tampoco arrancó: revisa 'docker compose logs bot'"
+}
+
+# The other images only change with docker-compose.yml: a failed pull (e.g. a Docker Hub rate
+# limit) must not block the update, "up" pulls whatever is really missing.
+pull_others() {
+	docker compose pull --quiet --ignore-pull-failures telegram-bot-api caddy >/dev/null 2>&1 ||
+		warn "No se pudieron actualizar las imágenes de telegram-bot-api/caddy; sigo con las que hay"
+}
+
+pull_failed_hint() {
+	warn "Si el paquete de GHCR es privado, hazlo público o inicia sesión como el usuario"
+	warn "que despliega ($(id -un)): docker login ghcr.io (ver DEPLOY.md, apartado 7)."
 }
 
 if docker compose ps --status running --services 2>/dev/null | grep -qx bot; then
 	"$ROOT/deploy/backup.sh" --quiet || warn "No se pudo hacer la copia de seguridad previa"
 fi
 
-if [[ -d $ROOT/.git ]]; then
-	git -c safe.directory="$ROOT" -C "$ROOT" pull --ff-only --quiet ||
-		warn "No se pudo actualizar el repositorio (git pull); sigo con los ficheros actuales"
-fi
+repo_update || warn "No se pudo actualizar el repositorio (git); sigo con los ficheros actuales"
 
 if [[ -n $tag ]]; then
 	# An explicit tag always comes from GHCR: leave local-build mode if it was on.
 	env_set "$ENV_FILE" BOT_TAG "$tag"
 	env_unset "$ENV_FILE" COMPOSE_FILE
 	info "Descargando ${image}:${tag}…"
-	if ! docker compose pull --quiet; then
+	if ! docker compose pull --quiet bot; then
+		pull_failed_hint
 		restore_previous
 		die "No se pudo descargar la imagen ${tag}"
 	fi
+	pull_others
 elif uses_local_build; then
 	info "Construyendo la imagen del bot en este servidor…"
-	docker compose pull --quiet --ignore-buildable || true
+	pull_others
 	if ! docker compose build bot; then
 		die "Falló la construcción de la imagen; el bot sigue con la versión anterior"
 	fi
 else
 	info "Descargando ${image}:${previous_tag}…"
-	docker compose pull --quiet || die "No se pudo descargar la imagen ${previous_tag}"
+	if ! docker compose pull --quiet bot; then
+		pull_failed_hint
+		die "No se pudo descargar la imagen ${previous_tag}; el bot sigue con la versión anterior"
+	fi
+	pull_others
 fi
 
 info "Reiniciando los servicios…"
@@ -85,6 +114,9 @@ if ! docker compose up -d --remove-orphans --wait --wait-timeout 180; then
 	die "La nueva versión no arrancó correctamente"
 fi
 
+# Old sha-* images stay tagged after each deploy: remove every bot image no container uses
+# (a later rollback pulls it from GHCR again), then dangling layers.
+docker image prune -af --filter "label=org.opencontainers.image.source=https://github.com/jpchaconr/telebot-photos" >/dev/null || true
 docker image prune -f >/dev/null || true
 version=$(docker compose exec -T bot python -c \
 	"import json, os, urllib.request; print(json.load(urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('WEB_PORT', '8080')))['version'])" \

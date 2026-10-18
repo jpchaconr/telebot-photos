@@ -72,8 +72,10 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
+          # /health reports this, and the deploy job checks it: always the immutable sha tag
+          # (a v* release still gets its own image tag and org.opencontainers.image.version).
           build-args: |
-            VERSION=${{ github.ref_type == 'tag' && github.ref_name || steps.names.outputs.tag }}
+            VERSION=${{ steps.names.outputs.tag }}
             REVISION=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -106,6 +108,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Deploy over SSH
+        id: ssh
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
@@ -126,8 +129,9 @@ jobs:
           ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -o BatchMode=yes -o ConnectTimeout=20 -p "${SSH_PORT:-22}" \
             "${SSH_USER:-deploy}@${SSH_HOST}" "$TAG"
+          echo "deployed=true" >> "$GITHUB_OUTPUT"
       - name: Check /health
-        if: vars.PUBLIC_URL != ''
+        if: steps.ssh.outputs.deployed == 'true' && vars.PUBLIC_URL != ''
         env:
           URL: ${{ vars.PUBLIC_URL }}
           TAG: ${{ needs.build.outputs.tag }}

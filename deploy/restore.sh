@@ -16,6 +16,11 @@ file=$(readlink -f "$1")
 [[ -f $file ]] || die "No existe $1"
 [[ $(head -c 15 "$file") == "SQLite format 3" ]] || die "$1 no es una base de datos SQLite"
 
+# Work on a private copy: the backup made just below may rotate the requested file away.
+src=$(mktemp "$ROOT/.state/restore.XXXXXX")
+trap 'rm -f "$src"' EXIT
+cp -- "$file" "$src"
+
 if docker compose ps --status running --services 2>/dev/null | grep -qx bot; then
 	info "Copia de seguridad del estado actual antes de restaurar…"
 	"$ROOT/deploy/backup.sh"
@@ -25,15 +30,17 @@ info "Parando el bot…"
 docker compose stop bot
 
 info "Restaurando $file…"
-# Remove the WAL files too: an old -wal next to the restored database would corrupt it.
-docker compose run --rm --no-deps --user 0 --entrypoint sh \
-	-v "${file}:/restore.db:ro" bot -c '
-		set -e
-		rm -f /data/bot.db /data/bot.db-wal /data/bot.db-shm
-		cp /restore.db /data/bot.db
-		chown 101:101 /data/bot.db
-		chmod 600 /data/bot.db
-	'
+# The file travels on stdin. The current database is only replaced once the new copy is
+# complete, and the WAL files go too: an old -wal next to the restored database corrupts it.
+docker compose run --rm -T --no-deps --user 0 --entrypoint sh bot -c '
+	set -e
+	cat >/data/bot.db.new
+	[ -s /data/bot.db.new ]
+	chown 101:101 /data/bot.db.new
+	chmod 600 /data/bot.db.new
+	rm -f /data/bot.db-wal /data/bot.db-shm
+	mv /data/bot.db.new /data/bot.db
+' <"$src"
 
 docker compose up -d --wait --wait-timeout 180 bot
 ok "Base de datos restaurada y bot en marcha"

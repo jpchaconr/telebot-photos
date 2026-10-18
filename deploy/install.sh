@@ -28,6 +28,15 @@ VOLUME_BOT_DATA=telebot-photos_bot-data
 PUBLIC_IP=''
 BOT_USERNAME=''
 
+# A VPS created a few minutes ago is often still running cloud-init or the automatic
+# updates, which hold the apt lock; plain apt-get would fail instead of waiting.
+wait_for_apt() {
+	if command -v cloud-init >/dev/null 2>&1; then
+		echo "==> Esperando a que termine la configuración inicial del servidor (cloud-init)…" >&2
+		cloud-init status --wait >/dev/null 2>&1 || true
+	fi
+}
+
 # --- bootstrap ---------------------------------------------------------------------------
 # Piped through curl there is no checkout yet: clone the repository and run its own copy
 # of this script, so the helpers in deploy/lib.sh and the compose files are available.
@@ -48,13 +57,15 @@ bootstrap() {
 	ROOT=${TELEBOT_DIR:-/opt/telebot-photos}
 	if ! command -v git >/dev/null 2>&1; then
 		echo "==> Instalando git…" >&2
-		apt-get update -qq
-		DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git ca-certificates curl >/dev/null
+		wait_for_apt
+		apt-get -o DPkg::Lock::Timeout=600 update -qq
+		DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 install -y -qq \
+			git ca-certificates curl >/dev/null
 	fi
 	if [[ -d $ROOT/.git ]]; then
-		# The checkout may belong to the deploy user: tell git that is expected.
-		git -c safe.directory="$ROOT" -C "$ROOT" pull --ff-only --quiet ||
-			echo "Aviso: no se pudo actualizar $ROOT" >&2
+		# shellcheck source=deploy/lib.sh
+		source "$ROOT/deploy/lib.sh"
+		repo_update || echo "Aviso: no se pudo actualizar $ROOT" >&2
 	else
 		local clone=(git clone --quiet)
 		[[ -n ${TELEBOT_REF:-} ]] && clone+=(--branch "$TELEBOT_REF")
@@ -136,8 +147,19 @@ check_platform() {
 	esac
 }
 
+APT=(apt-get -o DPkg::Lock::Timeout=600)
+
 apt_install() {
-	DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "$@" >/dev/null
+	DEBIAN_FRONTEND=noninteractive "${APT[@]}" install -y -qq --no-install-recommends "$@" >/dev/null
+}
+
+apt_update() { # retried: the lists lock may be busy even with Lock::Timeout
+	local attempt
+	for attempt in 1 2 3 4 5 6; do
+		"${APT[@]}" update -qq && return 0
+		((attempt < 6)) && sleep 20
+	done
+	die "apt-get update falla repetidamente; vuelve a ejecutar el instalador en unos minutos"
 }
 
 install_docker() {
@@ -150,7 +172,7 @@ install_docker() {
 	local pkg
 	for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; do
 		if dpkg -s "$pkg" >/dev/null 2>&1; then
-			apt-get remove -y -qq "$pkg" >/dev/null
+			"${APT[@]}" remove -y -qq "$pkg" >/dev/null
 		fi
 	done
 	install -m 0755 -d /etc/apt/keyrings
@@ -163,7 +185,7 @@ Suites: ${OS_CODENAME}
 Components: stable
 Signed-By: /etc/apt/keyrings/docker.asc
 EOF
-	apt-get update -qq
+	apt_update
 	apt_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 	systemctl enable --now docker >/dev/null
 	ok "Docker instalado"
@@ -208,8 +230,9 @@ EOF
 }
 
 install_system() {
+	wait_for_apt
 	info "Instalando paquetes base…"
-	apt-get update -qq
+	apt_update
 	apt_install ca-certificates curl git openssl cron gnupg
 	install_docker
 	configure_docker_logs
@@ -384,7 +407,7 @@ EOF
 		ask_value DUCKDNS_TOKEN "Token de DuckDNS (aparece arriba en duckdns.org)" \
 			'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' 1
 	fi
-	ask_value ACME_EMAIL "Email para Let's Encrypt (avisos de caducidad del certificado)" \
+	ask_value ACME_EMAIL "Email para la cuenta de Let's Encrypt" \
 		'^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$'
 	if ! env_has CONTACT_EMAIL; then
 		local contact=${CONTACT_EMAIL:-}
@@ -401,6 +424,9 @@ configure_misc() {
 	ask_value TIMEZONE "Zona horaria para nombrar los archivos" '^([A-Za-z_]+(/[A-Za-z0-9_+-]+)+|UTC)$' \
 		0 "${tz:-UTC}"
 	env_has BOT_TAG || env_set "$ENV_FILE" BOT_TAG latest
+	if [[ -n ${TELEBOT_REF:-} ]]; then
+		env_set "$ENV_FILE" TELEBOT_REF "$TELEBOT_REF"
+	fi
 
 	if [[ -z $(env_get "$ENV_FILE" ENCRYPTION_KEY) ]]; then
 		if docker volume inspect "$VOLUME_BOT_DATA" >/dev/null 2>&1; then
@@ -470,9 +496,11 @@ telegram_logout() {
 }
 
 choose_image() {
-	local tag
+	local tag image
 	tag=$(env_get "$ENV_FILE" BOT_TAG)
 	tag=${tag:-latest}
+	image=$(env_get "$ENV_FILE" BOT_IMAGE)
+	image=${image:-$BOT_IMAGE_DEFAULT}
 	if [[ ${TELEBOT_LOCAL_BUILD:-0} == 1 ]]; then
 		env_set "$ENV_FILE" COMPOSE_FILE "$LOCAL_BUILD_COMPOSE_FILE"
 	fi
@@ -480,24 +508,27 @@ choose_image() {
 		info "La imagen del bot se construye en este servidor (docker-compose.build.yml)"
 		return 0
 	fi
-	if image_is_public "$BOT_IMAGE_DEFAULT" "$tag"; then
-		ok "Imagen ${BOT_IMAGE_DEFAULT}:${tag} disponible"
+	if image_is_public "$image" "$tag"; then
+		ok "Imagen ${image}:${tag} disponible"
 		return 0
 	fi
-	warn "La imagen ${BOT_IMAGE_DEFAULT}:${tag} todavía no está publicada (o no es pública)."
+	warn "La imagen ${image}:${tag} todavía no está publicada (o no es pública)."
 	warn "La construyo aquí. Cuando GitHub Actions la publique, 'deploy/update.sh latest' la usará."
 	env_set "$ENV_FILE" COMPOSE_FILE "$LOCAL_BUILD_COMPOSE_FILE"
 }
 
 start_stack() {
 	cd "$ROOT"
+	info "Descargando las imágenes…"
+	# Best effort: "up" pulls whatever is missing, and a Docker Hub rate limit should not
+	# stop a re-run when the images are already here.
+	docker compose pull --quiet --ignore-pull-failures telegram-bot-api caddy >/dev/null 2>&1 ||
+		warn "No se pudieron actualizar las imágenes de telegram-bot-api/caddy"
 	if uses_local_build; then
 		info "Construyendo la imagen del bot (unos minutos la primera vez)…"
-		docker compose pull --quiet --ignore-buildable
 		docker compose build --pull bot
 	else
-		info "Descargando las imágenes…"
-		docker compose pull --quiet
+		docker compose pull --quiet bot
 	fi
 	info "Arrancando los servicios…"
 	if ! docker compose up -d --remove-orphans --wait --wait-timeout 300; then
@@ -521,20 +552,27 @@ check_https() {
 		sleep 5
 	done
 	warn "Todavía no responde $url. Revisa que los puertos 80 y 443 estén abiertos en el"
-	warn "cortafuegos del proveedor y mira 'docker compose logs caddy'."
+	warn "cortafuegos del proveedor y mira 'sudo docker compose logs caddy'."
 }
 
 # --- optional parts ------------------------------------------------------------------------
 
 ask_provider() { # ask_provider NAME ID_KEY SECRET_KEY ID_REGEX -> 0 if newly configured
 	local name=$1 id_key=$2 secret_key=$3 id_regex=$4 id secret
-	[[ -n $(env_get "$ENV_FILE" "$id_key") ]] && return 1
-	id=${!id_key:-}
-	secret=${!secret_key:-}
+	id=$(env_get "$ENV_FILE" "$id_key")
+	secret=$(env_get "$ENV_FILE" "$secret_key")
+	[[ -n $id && -n $secret ]] && return 1
+	# Missing only the secret (e.g. renewing an expired one): ask just for that.
+	id=${id:-${!id_key:-}}
+	secret=${secret:-${!secret_key:-}}
 	if [[ -z $id || -z $secret ]]; then
 		[[ $NONINTERACTIVE == 1 ]] && return 1
-		confirm "¿Configurar ${name} ahora? (puedes hacerlo más tarde volviendo a ejecutar el instalador)" ||
-			return 1
+		if [[ -z $id ]]; then
+			confirm "¿Configurar ${name} ahora? (puedes hacerlo más tarde volviendo a ejecutar el instalador)" ||
+				return 1
+		else
+			info "Falta el client secret de ${name} (Client ID ${id})."
+		fi
 		while [[ ! $id =~ $id_regex ]]; do
 			id=$(prompt "Client ID de ${name}")
 		done
@@ -552,7 +590,7 @@ configure_oauth() {
 	local domain changed=0
 	domain=$(env_get "$ENV_FILE" DOMAIN)
 	if [[ $NONINTERACTIVE != 1 ]] &&
-		[[ -z $(env_get "$ENV_FILE" GOOGLE_CLIENT_ID) || -z $(env_get "$ENV_FILE" MS_CLIENT_ID) ]]; then
+		[[ -z $(env_get "$ENV_FILE" GOOGLE_CLIENT_SECRET) || -z $(env_get "$ENV_FILE" MS_CLIENT_SECRET) ]]; then
 		print_console_values "$domain"
 	fi
 	ask_provider "Google Drive" GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET \
@@ -664,7 +702,7 @@ summary() {
   Siguiente paso: añade ${BOT_USERNAME:+@$BOT_USERNAME }el bot a un grupo y escribe /configurar.
   (S3 funciona ya; Google Drive y OneDrive necesitan sus credenciales: ver DEPLOY.md.)
 
-  Logs:            cd ${ROOT} && docker compose logs -f bot
+  Logs:            cd ${ROOT} && sudo docker compose logs -f bot
   Actualizar:      sudo ${ROOT}/deploy/update.sh latest
   Copia de datos:  sudo ${ROOT}/deploy/backup.sh   (también cada noche a las 03:17)
 
@@ -711,6 +749,10 @@ main() {
 	check_https
 	configure_oauth
 	setup_deploy_user
+	# Files written by this run as root (.env, .state, backups) go back to the deploy user.
+	if id deploy >/dev/null 2>&1 && [[ $(stat -c %U "$ROOT") == deploy ]]; then
+		chown -R deploy:deploy "$ROOT"
+	fi
 	[[ $SKIP_SYSTEM == 1 ]] || install_cron
 	summary
 }

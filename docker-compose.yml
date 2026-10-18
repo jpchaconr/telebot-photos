@@ -52,7 +52,7 @@ services:
       - "443:443/udp"
     environment:
       DOMAIN: ${DOMAIN:?Define DOMAIN en .env}
-      ACME_EMAIL: ${ACME_EMAIL:?Define ACME_EMAIL en .env (aviso de caducidad de certificados)}
+      ACME_EMAIL: ${ACME_EMAIL:?Define ACME_EMAIL en .env (cuenta de Let's Encrypt)}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       # Keep this volume: re-issuing certificates counts against Let's Encrypt limits.

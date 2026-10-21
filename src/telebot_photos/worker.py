@@ -108,7 +108,10 @@ class UploadWorker:
                     name=remote.name,
                     mime_type=remote.mime_type,
                     size=size,
-                    description=job.caption,
+                    caption=job.caption,
+                    # Jobs queued before sender_label existed only have the short name.
+                    sender=job.sender_label or job.sender_name,
+                    sender_id=job.sender_id,
                 )
             )
         except StorageAuthError as exc:

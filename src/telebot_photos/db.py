@@ -58,6 +58,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     file_size INTEGER,
     caption TEXT,
     sender_name TEXT NOT NULL,
+    sender_id INTEGER,
+    sender_label TEXT,
     sent_at REAL NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     attempts INTEGER NOT NULL DEFAULT 0,
@@ -72,9 +74,12 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS jobs_pending ON jobs (status, next_attempt_at);
 """
 
+# Columns added to ``jobs`` after the first release: older databases get them on startup.
+JOB_MIGRATIONS = {"sender_id": "INTEGER", "sender_label": "TEXT"}
+
 JOB_COLUMNS = (
     "id, chat_id, message_id, file_id, file_unique_id, kind, file_name, mime_type, file_size,"
-    " caption, sender_name, sent_at, attempts"
+    " caption, sender_name, sender_id, sender_label, sent_at, attempts"
 )
 
 
@@ -119,7 +124,10 @@ class NewJob:
     mime_type: str | None
     file_size: int | None
     caption: str | None
+    # Short name for the file name (``ana``) and full one for its metadata (``Ana (@ana)``).
     sender_name: str
+    sender_id: int | None
+    sender_label: str | None
     sent_at: float
 
 
@@ -150,6 +158,10 @@ class Database:
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA foreign_keys=ON")
         await self._conn.executescript(SCHEMA)
+        existing = {row["name"] for row in await self._fetchall("PRAGMA table_info(jobs)")}
+        for column, definition in JOB_MIGRATIONS.items():
+            if column not in existing:
+                await self._conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -350,9 +362,9 @@ class Database:
             cursor = await self.conn.execute(
                 """
                 INSERT OR IGNORE INTO jobs (chat_id, message_id, file_id, file_unique_id, kind,
-                    file_name, mime_type, file_size, caption, sender_name, sent_at,
-                    next_attempt_at, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    file_name, mime_type, file_size, caption, sender_name, sender_id,
+                    sender_label, sent_at, next_attempt_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.chat_id,
@@ -365,6 +377,8 @@ class Database:
                     job.file_size,
                     job.caption,
                     job.sender_name,
+                    job.sender_id,
+                    job.sender_label,
                     job.sent_at,
                     now,
                     now,

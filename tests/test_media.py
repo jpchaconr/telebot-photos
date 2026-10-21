@@ -5,7 +5,13 @@ import pytest
 from telegram import Animation, Chat, Document, Message, PhotoSize, Update, User, Video
 
 from conftest import FakeBot, FakeWorker, configure_chat
-from telebot_photos.bot.media import extract_media, media_handler, sender_name
+from telebot_photos.bot.media import (
+    extract_media,
+    media_handler,
+    sender_id,
+    sender_label,
+    sender_name,
+)
 
 GROUP = Chat(id=-100, type=Chat.SUPERGROUP, title="Familia")
 ANA = User(id=1, first_name="Ana", last_name="López", is_bot=False)
@@ -46,6 +52,17 @@ def test_sender_name_prefers_username_then_full_name():
     assert sender_name(Message(1, DATE, GROUP, sender_chat=GROUP)) == "Familia"
 
 
+def test_sender_label_has_full_name_and_username():
+    assert sender_label(message()) == "Ana López"
+    named = User(id=2, first_name="Bo", last_name="Ruiz", is_bot=False, username="bo_99")
+    assert sender_label(Message(1, DATE, GROUP, from_user=named)) == "Bo Ruiz (@bo_99)"
+    channel = Chat(id=-200, type=Chat.CHANNEL, title="Noticias", username="noticias")
+    anonymous = Message(1, DATE, GROUP, from_user=named, sender_chat=channel)
+    assert sender_label(anonymous) == "Noticias (@noticias)"
+    assert sender_id(anonymous) == -200
+    assert sender_id(message()) == 1
+
+
 @pytest.fixture
 def context(db, settings):
     worker = FakeWorker()
@@ -67,6 +84,7 @@ async def test_media_is_queued_only_for_configured_active_chats(db, context):
     assert context.worker.notified == 1
     job = await db.claim_next_job()
     assert job.caption == "hola" and job.sender_name == "Ana López"
+    assert job.sender_id == 1 and job.sender_label == "Ana López"
     assert job.sent_at == DATE.timestamp()
 
     await db.set_paused(-100, True)

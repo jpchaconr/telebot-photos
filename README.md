@@ -35,7 +35,14 @@ Telegram - Familia/                       (Drive)   ·  telegram/Familia/ (S3)
     └── 20261018-160000_ana_1251_presupuesto.pdf
 ```
 
-El pie de foto se guarda como descripción del archivo en Drive y OneDrive, y como metadato `caption` en S3.
+Cada archivo guarda en sus metadatos **quién lo envió** (nombre y @usuario) y **el comentario** (pie de foto), si lo tiene:
+
+- **Drive y OneDrive**: en la descripción del archivo (en OneDrive, solo en cuentas personales):
+  ```
+  Enviado por: Ana López (@ana)
+  Comentario: Cumpleaños de la abuela
+  ```
+- **S3**: en los metadatos `sender`, `sender-id` (el ID de Telegram, que no cambia aunque cambie el nombre) y `caption`, codificados como URL (`Ana%20L%C3%B3pez%20%28%40ana%29`) porque S3 solo admite ASCII.
 
 ## Puesta en marcha
 
@@ -123,6 +130,7 @@ Usa claves limitadas a ese bucket, con permiso de escritura.
 - Solo se guarda lo que se envía **mientras el bot está en el grupo**: la API de bots no permite leer el historial anterior.
 - Tamaño máximo por archivo: 20 MB con la API de Telegram, o 2 GB con el servidor local de la Bot API. Son los límites de Telegram para bots.
 - Los stickers no se guardan, y editar un mensaje para cambiar su archivo no actualiza la copia guardada.
+- En un álbum, Telegram pone el comentario en una sola de las fotos: las demás se guardan sin él. Editar el comentario después tampoco actualiza la copia.
 - Para conectar Google Drive u OneDrive, `PUBLIC_BASE_URL` tiene que ser accesible desde el navegador de quien autoriza.
 
 ## Desarrollo

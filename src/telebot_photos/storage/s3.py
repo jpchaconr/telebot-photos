@@ -44,6 +44,17 @@ def translate_error(exc: Exception) -> StorageError:
     return StorageError(f"{PROVIDER}: {exc}")
 
 
+def metadata_value(text: str, limit: int) -> str:
+    """URL-encode ``text`` and cut it to ``limit`` bytes without splitting a character."""
+    value = ""
+    for char in text:
+        encoded = quote(char)
+        if len(value) + len(encoded) > limit:
+            break
+        value += encoded
+    return value
+
+
 def object_key(prefix: str, folder: str, name: str) -> str:
     return "/".join(part.strip("/") for part in (prefix, folder, name) if part.strip("/"))
 
@@ -74,9 +85,16 @@ class S3Backend:
     async def upload(self, request: UploadRequest) -> str:
         key = object_key(self.prefix, request.folder, request.name)
         extra: dict[str, Any] = {"ContentType": request.mime_type}
-        if request.description:
-            # User metadata travels in HTTP headers, so keep it ASCII and short.
-            extra["Metadata"] = {"caption": quote(request.description[:500])}
+        # User metadata travels in HTTP headers, so keep it ASCII and within S3's 2 KB limit.
+        metadata: dict[str, str] = {}
+        if request.sender:
+            metadata["sender"] = metadata_value(request.sender, 300)
+        if request.sender_id is not None:
+            metadata["sender-id"] = str(request.sender_id)
+        if request.caption:
+            metadata["caption"] = metadata_value(request.caption, 1500)
+        if metadata:
+            extra["Metadata"] = metadata
         try:
             await asyncio.to_thread(
                 self._client.upload_file,

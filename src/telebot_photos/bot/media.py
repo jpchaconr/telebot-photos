@@ -70,6 +70,24 @@ def sender_name(message: Message) -> str:
     return user.username or user.full_name
 
 
+def sender_label(message: Message) -> str:
+    """Full name and username of the sender, for the file's metadata: ``Ana López (@ana)``."""
+    if message.sender_chat is not None:
+        name, username = message.sender_chat.title, message.sender_chat.username
+    elif message.from_user is not None:
+        name, username = message.from_user.full_name, message.from_user.username
+    else:
+        return "anónimo"
+    if name and username:
+        return f"{name} (@{username})"
+    return name or (f"@{username}" if username else "anónimo")
+
+
+def sender_id(message: Message) -> int | None:
+    sender = message.sender_chat or message.from_user
+    return sender.id if sender is not None else None
+
+
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     if message is None:
@@ -97,6 +115,8 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             file_size=info.file_size,
             caption=message.caption,
             sender_name=sender_name(message),
+            sender_id=sender_id(message),
+            sender_label=sender_label(message),
             sent_at=message.date.timestamp(),
         )
     )

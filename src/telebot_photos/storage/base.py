@@ -32,7 +32,19 @@ class UploadRequest:
     name: str
     mime_type: str
     size: int
-    description: str | None = None
+    caption: str | None = None
+    sender: str | None = None
+    sender_id: int | None = None
+
+    @property
+    def description(self) -> str | None:
+        """Who sent the file and its caption, for the providers' description field."""
+        lines = []
+        if self.sender:
+            lines.append(f"Enviado por: {self.sender}")
+        if self.caption:
+            lines.append(f"Comentario: {self.caption}")
+        return "\n".join(lines) or None
 
 
 class StorageBackend(Protocol):

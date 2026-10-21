@@ -67,7 +67,7 @@ async def test_upload_in_chunks_with_token_refresh(http, tokens, persisted, tmp_
     backend = gdrive.GoogleDriveBackend(http, tokens, "root-folder")
 
     ref = await backend.upload(
-        UploadRequest(source, "2026-10", "a.jpg", "image/jpeg", 7, description="hola")
+        UploadRequest(source, "2026-10", "a.jpg", "image/jpeg", 7, caption="hola", sender="Ana")
     )
 
     assert ref == "file-id"
@@ -77,7 +77,11 @@ async def test_upload_in_chunks_with_token_refresh(http, tokens, persisted, tmp_
     assert "'root-folder' in parents" in search.calls[0].request.url.params["q"]
     assert json.loads(create.calls[0].request.content)["parents"] == ["root-folder"]
     metadata = json.loads(init.calls[0].request.content)
-    assert metadata == {"name": "a.jpg", "parents": ["month-folder"], "description": "hola"}
+    assert metadata == {
+        "name": "a.jpg",
+        "parents": ["month-folder"],
+        "description": "Enviado por: Ana\nComentario: hola",
+    }
     assert init.calls[0].request.headers["X-Upload-Content-Length"] == "7"
     assert init.calls[0].request.headers["Authorization"] == "Bearer new"
     assert chunks.calls[0].request.headers["Content-Range"] == "bytes 0-3/7"

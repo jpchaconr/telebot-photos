@@ -105,10 +105,11 @@ elige un administrador de cada grupo. Esta página explica qué datos trata y pa
 <li><b>Configuración de cada grupo:</b> identificador y nombre del grupo, quién lo configuró,
 el proveedor elegido y sus credenciales (tokens OAuth de Google o Microsoft, o claves S3).
 Las credenciales se guardan cifradas.</li>
-<li><b>Archivos enviados al grupo:</b> identificadores de Telegram del mensaje y del archivo,
-nombre del remitente, fecha y pie de foto, para nombrar cada copia y evitar duplicados.
-Los archivos se descargan temporalmente en este servidor solo para subirlos, y se borran
-después.</li>
+<li><b>Archivos enviados al grupo:</b> identificadores de Telegram del mensaje, del archivo y
+del remitente, nombre y nombre de usuario del remitente, fecha y pie de foto, para nombrar
+cada copia, anotar en su descripción o metadatos quién la envió y con qué comentario, y evitar
+duplicados. Los archivos se descargan temporalmente en este servidor solo para subirlos, y se
+borran después.</li>
 </ul>
 <h2>Para qué se usan</h2>
 <p>Únicamente para copiar los archivos del grupo a la cuenta de almacenamiento que eligió su

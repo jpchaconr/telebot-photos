@@ -66,6 +66,8 @@ def new_job(chat_id: int = -100, message_id: int = 10, unique: str = "u1", **kw:
         "file_size": 4,
         "caption": None,
         "sender_name": "ana",
+        "sender_id": 1,
+        "sender_label": "Ana (@ana)",
         "sent_at": time.time(),
     }
     values.update(kw)

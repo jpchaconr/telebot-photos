@@ -219,6 +219,12 @@ async def test_configure_s3_and_save_a_photo(aws, running: FakeBotApi):
     assert len([k for k in keys if k.endswith(".jpg")]) == 1
     key = next(k for k in keys if k.endswith(".jpg"))
     assert key.startswith("telegram/Familia/") and "_ana_" in key
+    metadata = boto3.client("s3", region_name="us-east-1").head_object(Bucket="fotos", Key=key)
+    assert metadata["Metadata"] == {
+        "caption": "Cumple",
+        "sender": "Ana%20%28%40ana%29",
+        "sender-id": "1",
+    }
     assert next(c for c in api.calls if c[0] == "getFile")[1]["file_id"] == "big"
     for _ in range(50):  # the file is removed right after the reaction is sent
         if not (api.files_dir / "big").exists():
@@ -280,7 +286,8 @@ async def test_configure_google_drive_and_save_a_photo(google_api, running: Fake
     send_photo(api)
     await api.wait_for("setMessageReaction")
     metadata = json.loads(google_api["init"].calls[0].request.content)
-    assert metadata["parents"] == ["folder-x"] and metadata["description"] == "Cumple"
+    assert metadata["parents"] == ["folder-x"]
+    assert metadata["description"] == "Enviado por: Ana (@ana)\nComentario: Cumple"
     assert google_api["put"].calls[0].request.content == b"\xff\xd8 fake jpeg"
 
     api.message(GROUP, "/enlace")

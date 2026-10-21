@@ -1,12 +1,48 @@
 import time
 
+import aiosqlite
+
 from conftest import configure_chat, new_job
+from telebot_photos.crypto import Crypto
+from telebot_photos.db import Database
 
 
 async def test_enqueue_deduplicates_per_chat(db):
     assert await db.enqueue_job(new_job(unique="a"))
     assert not await db.enqueue_job(new_job(unique="a", message_id=11))
     assert await db.enqueue_job(new_job(chat_id=-200, unique="a"))
+
+
+async def test_old_databases_get_the_new_job_columns(settings, tmp_path):
+    path = tmp_path / "old.db"
+    async with aiosqlite.connect(path) as old:
+        await old.execute(
+            "CREATE TABLE jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL,"
+            " message_id INTEGER NOT NULL, file_id TEXT NOT NULL, file_unique_id TEXT NOT NULL,"
+            " kind TEXT NOT NULL, file_name TEXT, mime_type TEXT, file_size INTEGER, caption TEXT,"
+            " sender_name TEXT NOT NULL, sent_at REAL NOT NULL,"
+            " status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,"
+            " next_attempt_at REAL NOT NULL DEFAULT 0, last_error TEXT, remote_ref TEXT,"
+            " created_at REAL NOT NULL, updated_at REAL NOT NULL, UNIQUE (chat_id, file_unique_id))"
+        )
+        await old.execute(
+            "INSERT INTO jobs (chat_id, message_id, file_id, file_unique_id, kind, sender_name,"
+            " sent_at, created_at, updated_at)"
+            " VALUES (-100, 9, 'f', 'old', 'photo', 'ana', 0, 0, 0)"
+        )
+        await old.commit()
+
+    database = Database(path, Crypto(settings.encryption_key))
+    await database.connect()
+    try:
+        await configure_chat(database)
+        await database.enqueue_job(new_job(unique="new", sender_id=5, sender_label="Bo (@bo)"))
+        old_job = await database.claim_next_job()
+        new = await database.claim_next_job()
+    finally:
+        await database.close()
+    assert old_job.file_unique_id == "old" and old_job.sender_label is None
+    assert new.sender_id == 5 and new.sender_label == "Bo (@bo)"
 
 
 async def test_claim_only_from_usable_chats(db):

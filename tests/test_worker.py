@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from io import BytesIO
 from pathlib import Path
 
 import pytest
+from PIL import Image
 from telegram.error import BadRequest
 
 from conftest import FakeBot, configure_chat, new_job
@@ -76,19 +78,92 @@ async def claim(db):
 
 async def test_successful_upload_reacts_and_cleans_up(worker, db, bot, backend, files_dir):
     await configure_chat(db)
-    await db.enqueue_job(new_job(caption="En la playa", sender_name="Ana López"))
+    await db.enqueue_job(
+        new_job(
+            caption="En la playa",
+            sender_name="Ana López",
+            sender_id=7,
+            sender_label="Ana López (@ana)",
+        )
+    )
     await worker.process(await claim(db))
 
     request, content = backend.uploads[0]
     assert content == b"data"
     assert request.size == 4
     assert request.mime_type == "image/jpeg"
-    assert request.description == "En la playa"
+    assert request.caption == "En la playa"
+    assert request.sender == "Ana López (@ana)" and request.sender_id == 7
     assert "_Ana_López_10.jpg" in request.name
     assert len(request.folder) == 7  # YYYY-MM
     assert bot.reactions == [(-100, 10, "👍")]
     assert (await db.job_stats(-100))["done"] == 1
     assert not (files_dir / "file-u1").exists()
+
+
+def jpeg() -> bytes:
+    buffer = BytesIO()
+    Image.new("RGB", (8, 8)).save(buffer, "JPEG")
+    return buffer.getvalue()
+
+
+async def test_photos_get_the_sender_and_caption_in_their_exif(
+    worker, db, backend, files_dir, settings
+):
+    await configure_chat(db)
+    (files_dir / "file-u1").write_bytes(jpeg())
+    (files_dir / "file-u2").write_bytes(jpeg())
+    await db.enqueue_job(new_job(caption="Cumple", sender_label="Ana (@ana)"))
+    await db.enqueue_job(new_job(unique="u2", kind="document", file_name="a.jpg"))
+    await worker.process(await claim(db))
+    await worker.process(await claim(db))
+
+    (photo, photo_bytes), (_, document_bytes) = backend.uploads
+    with Image.open(BytesIO(photo_bytes)) as image:
+        tags = image.getexif()
+    assert tags[0x010E] == "Enviado por: Ana (@ana)\nComentario: Cumple"
+    assert tags[0x013B] == "Ana (@ana)"
+    assert photo.size == len(photo_bytes) and photo.local_path.parent == settings.temp_dir
+    assert document_bytes == jpeg()  # files sent as documents are stored as they are
+    assert list(settings.temp_dir.iterdir()) == []
+    assert not (files_dir / "file-u1").exists()
+
+
+async def test_photo_is_uploaded_as_is_if_exif_fails(worker, db, backend, files_dir, monkeypatch):
+    def broken(*args, **kwargs):
+        raise OSError("disco lleno")
+
+    monkeypatch.setattr("telebot_photos.exif.write_tagged_copy", broken)
+    await configure_chat(db)
+    (files_dir / "file-u1").write_bytes(jpeg())
+    await db.enqueue_job(new_job())
+    await worker.process(await claim(db))
+
+    [(request, content)] = backend.uploads
+    assert content == jpeg() and request.local_path == files_dir / "file-u1"
+    assert (await db.job_stats(-100))["done"] == 1
+
+
+async def test_jobs_queued_before_sender_label_use_the_short_name(worker, db, backend):
+    await configure_chat(db)
+    await db.enqueue_job(new_job(sender_name="ana", sender_id=None, sender_label=None))
+    await worker.process(await claim(db))
+
+    request, _ = backend.uploads[0]
+    assert request.sender == "ana" and request.sender_id is None
+
+
+def test_description_has_the_sender_and_the_caption(tmp_path: Path):
+    def request(**kwargs) -> UploadRequest:
+        return UploadRequest(tmp_path / "a.jpg", "2026-10", "a.jpg", "image/jpeg", 1, **kwargs)
+
+    assert request().description is None
+    assert request(caption="Cumple").description == "Comentario: Cumple"
+    assert request(sender="Ana (@ana)").description == "Enviado por: Ana (@ana)"
+    assert (
+        request(sender="Ana (@ana)", caption="Cumple").description
+        == "Enviado por: Ana (@ana)\nComentario: Cumple"
+    )
 
 
 async def test_transient_error_is_retried_with_backoff(worker, db, bot, backend, files_dir):

@@ -21,6 +21,7 @@ dev = [
     "pytest-asyncio~=1.4",
     "respx~=0.23",
     "moto[s3,server]~=5.2",
+    "pillow~=13.0",
     "ruff",
 ]
 

@@ -5,7 +5,7 @@ import pytest
 from moto import mock_aws
 
 from telebot_photos.storage.base import PermanentStorageError, UploadRequest
-from telebot_photos.storage.s3 import S3Backend, object_key
+from telebot_photos.storage.s3 import S3Backend, metadata_value, object_key
 
 CREDENTIALS = {"access_key_id": "AK", "secret_access_key": "SK"}
 
@@ -15,6 +15,13 @@ def aws():
     with mock_aws():
         boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="fotos")
         yield
+
+
+def test_metadata_value_is_ascii_and_never_splits_a_character():
+    assert metadata_value("¡Playa!", 100) == "%C2%A1Playa%21"
+    assert metadata_value("¡Playa!", 6) == "%C2%A1"
+    assert metadata_value("¡Playa!", 5) == ""
+    assert metadata_value("ab", 1) == "a"
 
 
 def test_object_key_skips_empty_parts():
@@ -30,14 +37,27 @@ async def test_upload_and_check(aws, tmp_path: Path):
     )
     await backend.check()
     key = await backend.upload(
-        UploadRequest(source, "2026-10", "a.jpg", "image/jpeg", 10, description="¡Playa!")
+        UploadRequest(
+            source,
+            "2026-10",
+            "a.jpg",
+            "image/jpeg",
+            10,
+            caption="¡Playa!",
+            sender="Ana López (@ana)",
+            sender_id=42,
+        )
     )
     assert key == "telegram/Familia/2026-10/a.jpg"
 
     obj = boto3.client("s3", region_name="us-east-1").get_object(Bucket="fotos", Key=key)
     assert obj["Body"].read() == b"jpeg-bytes"
     assert obj["ContentType"] == "image/jpeg"
-    assert obj["Metadata"]["caption"] == "%C2%A1Playa%21"
+    assert obj["Metadata"] == {
+        "caption": "%C2%A1Playa%21",
+        "sender": "Ana%20L%C3%B3pez%20%28%40ana%29",
+        "sender-id": "42",
+    }
     await backend.aclose()
 
 

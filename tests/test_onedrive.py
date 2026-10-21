@@ -70,12 +70,15 @@ async def test_upload_session_in_chunks(http, tokens, tmp_path, monkeypatch):
     backend = onedrive.OneDriveBackend(http, tokens, "/Telegram/")
 
     ref = await backend.upload(
-        UploadRequest(source, "2026-10", "a.mp4", "video/mp4", 5, description="vídeo")
+        UploadRequest(source, "2026-10", "a.mp4", "video/mp4", 5, caption="vídeo")
     )
 
     assert ref == "item-id"
     item = json.loads(session.calls[0].request.content)["item"]
-    assert item == {"@microsoft.graph.conflictBehavior": "rename", "description": "vídeo"}
+    assert item == {
+        "@microsoft.graph.conflictBehavior": "rename",
+        "description": "Comentario: vídeo",
+    }
     assert chunks.calls[0].request.headers["Content-Range"] == "bytes 0-2/5"
     assert chunks.calls[1].request.headers["Content-Range"] == "bytes 3-4/5"
     assert "Authorization" not in chunks.calls[0].request.headers

@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from dataclasses import replace
 from pathlib import Path
 
 from telegram import Bot, ReplyParameters
 from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
 
+from . import exif
 from .config import Settings
 from .db import Database, Job
 from .naming import build_remote_name
@@ -81,6 +83,7 @@ class UploadWorker:
 
     async def process(self, job: Job) -> None:
         local_path: Path | None = None
+        tagged_path: Path | None = None
         owned_by_bot_api = False
         finished = False
         try:
@@ -101,19 +104,21 @@ class UploadWorker:
             )
             backend = self._backends.get(chat)
             size = (await asyncio.to_thread(local_path.stat)).st_size
-            ref = await backend.upload(
-                UploadRequest(
-                    local_path=local_path,
-                    folder=remote.folder,
-                    name=remote.name,
-                    mime_type=remote.mime_type,
-                    size=size,
-                    caption=job.caption,
-                    # Jobs queued before sender_label existed only have the short name.
-                    sender=job.sender_label or job.sender_name,
-                    sender_id=job.sender_id,
-                )
+            request = UploadRequest(
+                local_path=local_path,
+                folder=remote.folder,
+                name=remote.name,
+                mime_type=remote.mime_type,
+                size=size,
+                caption=job.caption,
+                # Jobs queued before sender_label existed only have the short name.
+                sender=job.sender_label or job.sender_name,
+                sender_id=job.sender_id,
             )
+            if job.kind == "photo":
+                tagged_path = self._settings.temp_dir / f"{job.id}_{job.file_unique_id}.exif.jpg"
+                request = await self._with_exif(job, request, tagged_path)
+            ref = await backend.upload(request)
         except StorageAuthError as exc:
             log.warning("Chat %s lost access to its storage: %s", job.chat_id, exc)
             await self._db.retry_job(job.id, str(exc), AUTH_RETRY_DELAY, count_attempt=False)
@@ -144,6 +149,26 @@ class UploadWorker:
                 except OSError as exc:
                     # Usually a uid mismatch with the Bot API volume: the disk will fill up.
                     log.warning("Could not delete %s: %s", local_path, exc)
+            if tagged_path is not None:
+                with contextlib.suppress(OSError):
+                    tagged_path.unlink(missing_ok=True)
+
+    async def _with_exif(self, job: Job, request: UploadRequest, target: Path) -> UploadRequest:
+        """Upload a copy of the photo with the sender and caption in its EXIF (best effort)."""
+        try:
+            size = await asyncio.to_thread(
+                exif.write_tagged_copy,
+                request.local_path,
+                target,
+                description=request.description,
+                artist=request.sender,
+            )
+        except Exception:
+            log.warning("Could not add EXIF to job %s, uploading it as is", job.id, exc_info=True)
+            return request
+        if size is None:
+            return request
+        return replace(request, local_path=target, size=size)
 
     async def _fetch(self, job: Job) -> tuple[Path, bool]:
         """Return the local path of the file and whether it lives in the Bot API server's dir."""

@@ -43,6 +43,7 @@ Cada archivo guarda en sus metadatos **quién lo envió** (nombre y @usuario) y 
   Comentario: Cumpleaños de la abuela
   ```
 - **S3**: en los metadatos `sender`, `sender-id` (el ID de Telegram, que no cambia aunque cambie el nombre) y `caption`, codificados como URL (`Ana%20L%C3%B3pez%20%28%40ana%29`) porque S3 solo admite ASCII.
+- **Dentro de la foto (EXIF)**, para que los datos viajen con ella si la descargas: el mismo texto en `ImageDescription` y `XPComment`, y el remitente en `Artist` y `XPAuthor`. En Windows se ven en *Propiedades → Detalles* (*Comentarios* y *Autores*). Solo en las fotos normales, que Telegram comprime y entrega sin EXIF; la imagen no se vuelve a comprimir. Las fotos enviadas como archivo se guardan tal cual.
 
 ## Puesta en marcha
 
@@ -202,6 +203,7 @@ Código (`src/telebot_photos/`):
 | `bot/media.py` | Captura de la multimedia y encolado |
 | `bot/admin.py` | `/estado`, `/enlace`, `/pausar`, `/reanudar`, `/desconectar`, migración de grupos |
 | `worker.py` | Descarga desde Telegram, subida, reintentos, reacciones y avisos |
+| `exif.py` | Remitente y comentario en el EXIF de las fotos, sin recomprimirlas |
 | `storage/` | Backends `gdrive.py`, `onedrive.py` y `s3.py`, con subidas por partes |
 | `oauth/` | Cliente OAuth 2.0 y refresco de tokens |
 | `web.py` | Página principal, `/privacy`, callbacks OAuth y `/health` |

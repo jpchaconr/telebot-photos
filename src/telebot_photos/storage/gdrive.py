@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from urllib.parse import quote
 
 import httpx
 
 from ..oauth.base import TokenManager
 from ._http import AuthorizedHttp, error_message, raise_for_status, read_range
-from .base import PermanentStorageError, StorageAuthError, StorageError, UploadRequest
+from .base import (
+    MediaNotFound,
+    MediaRequest,
+    MediaStream,
+    PermanentStorageError,
+    StorageAuthError,
+    StorageError,
+    UploadRequest,
+)
 
 API = "https://www.googleapis.com/drive/v3"
 UPLOAD_API = "https://www.googleapis.com/upload/drive/v3/files"
@@ -77,6 +87,14 @@ async def create_root_folder(
     """Create (or reuse) the chat's folder in the root of the user's Drive."""
     folder = await find_or_create_folder(AuthorizedHttp(http, tokens, PROVIDER), name, "root")
     return {"folder_id": folder["id"], "folder_name": name, "folder_url": folder["webViewLink"]}
+
+
+async def _relay_chunks(response: httpx.Response) -> AsyncIterator[bytes]:
+    try:
+        async for chunk in response.aiter_bytes():
+            yield chunk
+    except httpx.HTTPError as exc:
+        raise StorageError(f"Error de red con {PROVIDER}: {exc!r}") from exc
 
 
 class GoogleDriveBackend:
@@ -150,6 +168,34 @@ class GoogleDriveBackend:
             if stalled >= 3:
                 raise StorageError(f"{PROVIDER} no está aceptando los datos de la subida")
             offset = new_offset
+
+    async def media(self, request: MediaRequest) -> MediaStream:
+        """Drive has no pre-signed links: the server relays the file, with ``Range`` for videos."""
+        headers = {"Range": request.range_header} if request.range_header else {}
+        response = await self._api.request(
+            "GET",
+            f"{API}/files/{quote(request.ref, safe='')}",
+            params={"alt": "media"},
+            headers=headers,
+            stream=True,
+        )
+        if response.status_code not in (200, 206):
+            await response.aread()
+            await response.aclose()
+            if response.status_code == 404:
+                raise MediaNotFound(f"El archivo ya no está en {PROVIDER}")
+            _check(response)
+            raise StorageError(f"{PROVIDER}: respuesta inesperada {response.status_code}")
+        return MediaStream(
+            status=response.status_code,
+            chunks=_relay_chunks(response),
+            close=response.aclose,
+            headers={
+                name: response.headers[name]
+                for name in ("Content-Length", "Content-Range")
+                if name in response.headers
+            },
+        )
 
     async def aclose(self) -> None:
         return None

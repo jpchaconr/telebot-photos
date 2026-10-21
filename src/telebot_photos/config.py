@@ -30,6 +30,8 @@ class Settings(BaseSettings):
 
     database_path: Path = Path("data/bot.db")
     temp_dir: Path = Path("data/tmp")
+    # Previews for the web gallery, downloaded from Telegram when someone first sees them.
+    thumb_dir: Path = Path("data/thumbs")
     web_host: str = "0.0.0.0"
     web_port: int = 8080
 

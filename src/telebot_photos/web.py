@@ -1,4 +1,4 @@
-"""Small web server for the OAuth callbacks and health checks."""
+"""Small web server for the OAuth callbacks, health checks and the groups' galleries."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from telegram import Bot
 from telegram.error import TelegramError
 
 from .bot.setup import SetupError, complete_setup, default_folder_name, default_onedrive_path
+from .gallery import Gallery
 from .oauth.base import TokenManager
 from .oauth.providers import GOOGLE, MICROSOFT
 from .services import Services
@@ -125,10 +126,18 @@ limitado (Limited Use).</p>
 <p>Con OneDrive, el bot usa los permisos <code>Files.ReadWrite</code>,
 <code>offline_access</code> y <code>User.Read</code> solo para crear la carpeta del grupo y
 subir los archivos.</p>
+<h2>Galería web</h2>
+<p>Si un administrador la activa con /galeria, los miembros del grupo pueden ver las fotos, vídeos
+y GIFs guardados en una página web de solo lectura, a la que se entra con un enlace secreto del
+grupo: cualquiera que tenga el enlace puede verla, así que no debe compartirse fuera del grupo.
+Los archivos se leen de la nube del grupo con enlaces temporales o a través de este servidor, sin
+entregar nunca las credenciales al navegador. Para mostrar la galería, el servidor guarda copias
+pequeñas (unos 320 píxeles) de las vistas previas que genera Telegram. Un administrador puede
+cambiar el enlace o desactivar la galería, lo que borra esas vistas previas.</p>
 <h2>Conservación y borrado</h2>
-<p>Un administrador puede usar /desconectar en el grupo para borrar las credenciales y la cola
-de archivos pendientes. También puedes revocar el acceso desde tu cuenta de
-<a href="https://myaccount.google.com/permissions">Google</a> o de
+<p>Un administrador puede usar /desconectar en el grupo para borrar las credenciales, la cola
+de archivos pendientes, la galería y sus vistas previas. También puedes revocar el acceso desde
+tu cuenta de <a href="https://myaccount.google.com/permissions">Google</a> o de
 <a href="https://account.live.com/consent/Manage">Microsoft</a>. Los archivos ya copiados
 están en tu cuenta y el bot no los borra.</p>
 <h2>Contacto</h2>
@@ -204,4 +213,5 @@ def create_web_app(services: Services, bot: Bot) -> web.Application:
     app.router.add_get("/privacy", privacy)
     app.router.add_get("/health", health)
     app.router.add_get("/oauth/{client}/callback", oauth_callback)
+    Gallery(services, bot).add_routes(app)
     return app

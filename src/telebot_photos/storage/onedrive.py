@@ -10,7 +10,14 @@ import httpx
 
 from ..oauth.base import TokenManager
 from ._http import AuthorizedHttp, raise_for_status, read_range
-from .base import StorageAuthError, StorageError, UploadRequest
+from .base import (
+    MediaNotFound,
+    MediaRedirect,
+    MediaRequest,
+    StorageAuthError,
+    StorageError,
+    UploadRequest,
+)
 
 GRAPH = "https://graph.microsoft.com/v1.0"
 # Must be a multiple of 320 KiB.
@@ -123,6 +130,21 @@ class OneDriveBackend:
                 raise StorageError(f"{PROVIDER} no está aceptando los datos de la subida")
             offset = new_offset
         raise StorageError(f"{PROVIDER} no confirmó la subida")
+
+    async def media(self, request: MediaRequest) -> MediaRedirect:
+        """Graph redirects ``/content`` to a pre-authenticated download URL that expires soon."""
+        response = await self._api.request(
+            "GET",
+            f"{GRAPH}/me/drive/items/{quote(request.ref, safe='')}/content",
+            follow_redirects=False,
+        )
+        if response.status_code == 404:
+            raise MediaNotFound(f"El archivo ya no está en {PROVIDER}")
+        location = response.headers.get("Location")
+        if response.is_redirect and location:
+            return MediaRedirect(location)
+        raise_for_status(response, PROVIDER)
+        raise StorageError(f"{PROVIDER} no devolvió un enlace de descarga")
 
     async def aclose(self) -> None:
         return None

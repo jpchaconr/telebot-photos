@@ -12,9 +12,20 @@ from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError, EndpointConnectionError
 
-from .base import PermanentStorageError, StorageAuthError, StorageError, UploadRequest
+from .base import (
+    MediaNotFound,
+    MediaRedirect,
+    MediaRequest,
+    PermanentStorageError,
+    StorageAuthError,
+    StorageError,
+    UploadRequest,
+    content_disposition,
+)
 
 PROVIDER = "S3"
+# Lifetime of the gallery's pre-signed links.
+PRESIGNED_TTL = 600
 # boto3 defaults to 10 threads x 8 MiB per upload; keep memory low on 1 GB servers.
 TRANSFER_CONFIG = TransferConfig(max_concurrency=4)
 _AUTH_CODES = {
@@ -112,6 +123,37 @@ class S3Backend:
                 raise translate_error(cause) from exc
             raise StorageError(f"{PROVIDER}: {exc}") from exc
         return key
+
+    async def media(self, request: MediaRequest) -> MediaRedirect:
+        """A pre-signed link that only opens this object, for a few minutes.
+
+        It is computed locally (no request to S3), and the response headers it asks for keep
+        the browser from treating the file as anything other than the gallery expects.
+        """
+        params = {
+            "Bucket": self.bucket,
+            "Key": request.ref,
+            "ResponseContentType": request.mime_type,
+            "ResponseContentDisposition": content_disposition(request.file_name, request.download),
+        }
+        try:
+            url = self._client.generate_presigned_url(
+                "get_object", Params=params, ExpiresIn=PRESIGNED_TTL
+            )
+        except (BotoCoreError, ClientError) as exc:
+            raise translate_error(exc) from exc
+        return MediaRedirect(url)
+
+    async def check_read(self, key: str) -> None:
+        """Verify the credentials can read ``key`` (the gallery needs ``s3:GetObject``)."""
+        try:
+            await asyncio.to_thread(self._client.head_object, Bucket=self.bucket, Key=key)
+        except ClientError as exc:
+            if str(exc.response.get("Error", {}).get("Code", "")) in ("404", "NoSuchKey"):
+                raise MediaNotFound(f"{PROVIDER}: no existe {key}") from exc
+            raise translate_error(exc) from exc
+        except BotoCoreError as exc:
+            raise translate_error(exc) from exc
 
     async def check(self) -> None:
         """Verify the credentials can write and delete in the bucket."""

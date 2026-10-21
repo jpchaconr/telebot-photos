@@ -25,18 +25,31 @@ class AuthorizedHttp:
         *,
         authorize: bool = True,
         headers: dict[str, str] | None = None,
+        stream: bool = False,
         **kwargs: Any,
     ) -> httpx.Response:
-        """Send a request, refreshing the access token once if it was rejected."""
+        """Send a request, refreshing the access token once if it was rejected.
+
+        With ``stream`` the body is not read yet: the caller must ``aclose`` the response.
+        """
         for attempt in range(2):
             request_headers = dict(headers or {})
             if authorize:
                 request_headers["Authorization"] = f"Bearer {await self.tokens.access_token()}"
             try:
-                response = await self.http.request(method, url, headers=request_headers, **kwargs)
+                if stream:
+                    request = self.http.build_request(
+                        method, url, headers=request_headers, **kwargs
+                    )
+                    response = await self.http.send(request, stream=True)
+                else:
+                    response = await self.http.request(
+                        method, url, headers=request_headers, **kwargs
+                    )
             except httpx.HTTPError as exc:
                 raise StorageError(f"Error de red con {self.provider}: {exc!r}") from exc
             if response.status_code == 401 and authorize and attempt == 0:
+                await response.aclose()
                 self.tokens.invalidate()
                 continue
             return response

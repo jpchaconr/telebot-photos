@@ -23,6 +23,7 @@ Grupo ──foto/vídeo──▶ bot ──▶ cola persistente (SQLite)
 - **Credenciales cifradas** en la base de datos con `ENCRYPTION_KEY` (Fernet).
 - **Cola persistente** con reintentos y backoff exponencial: si el servidor se reinicia o la nube falla un rato, no se pierde nada.
 - **Sin duplicados**: el mismo archivo reenviado varias veces al grupo se guarda una sola vez.
+- **Galería web de solo lectura**: con `/galeria`, los miembros del grupo ven las fotos, vídeos y GIFs guardados en una web propia, con filtros por persona y por mes.
 - **Archivos de hasta 20 MB** con la API de Telegram, o **hasta 2 GB** si añades el servidor local de la Bot API (el instalador lo pregunta). Con 20 MB, el bot avisa en el grupo de los archivos más grandes en vez de guardarlos.
 
 Los archivos se organizan por mes:
@@ -82,11 +83,30 @@ Si solo configuras Google o solo Microsoft, el otro proveedor simplemente no apa
 | `/configurar` | admins | Conecta o cambia el almacenamiento del grupo |
 | `/estado` | todos | Proveedor, carpeta, archivos guardados, pendientes y con error |
 | `/enlace` | todos | Enlace a la carpeta (Drive/OneDrive) o ubicación en S3 |
+| `/galeria` | todos | Enlace a la galería web (la primera vez la activa un admin) |
 | `/pausar` · `/reanudar` | admins | Deja de guardar o vuelve a hacerlo |
 | `/desconectar` | admins | Borra las credenciales y la cola del grupo (no toca lo ya guardado) |
 | `/ayuda` | todos | Ayuda |
 
 Si alguien revoca el acceso a la cuenta o borra la carpeta raíz, el bot avisa en el grupo una sola vez y guarda los archivos pendientes en cuanto un admin vuelve a usar `/configurar`.
+
+### Galería web
+
+Una página para ver lo guardado sin entrar en la cuenta de Drive, OneDrive o S3:
+
+- **Cómo se entra**: un administrador escribe `/galeria` en el grupo y el bot responde con un enlace secreto (`https://DOMAIN/g/…`). Después, cualquier miembro puede pedirlo con `/galeria`.
+- **Qué muestra**: las fotos, vídeos y GIFs, en una cuadrícula agrupada por mes, con filtros por persona y por mes. El visor a pantalla completa indica quién lo envió, cuándo y con qué comentario, y tiene un botón para descargar el original. Los audios, notas de voz y documentos no aparecen, salvo las imágenes y vídeos enviados como archivo.
+- **Solo lectura**: la web no puede subir, cambiar ni borrar nada.
+
+Seguridad:
+
+- **Quien tenga el enlace puede ver la galería.** El enlace es largo y aleatorio (imposible de adivinar), y el bot lo envía como contenido protegido, para que no se pueda reenviar desde Telegram. Aun así, que nadie lo comparta fuera del grupo.
+- **Cambiar el enlace o desactivar la galería**: los botones del mensaje de `/galeria` lo hacen al instante (solo admins). El enlace anterior deja de funcionar.
+- **Las credenciales nunca llegan al navegador**:
+  - **S3**: la web redirige a un enlace prefirmado que caduca a los 10 minutos y solo abre ese archivo. Las claves necesitan permiso de lectura (`s3:GetObject`); si no lo tienen, el bot avisa al activar la galería.
+  - **OneDrive**: redirige a un enlace temporal de descarga.
+  - **Drive**: el servidor hace de intermediario.
+- **Vistas previas**: las miniaturas (unos 320 px) son las que ya genera Telegram. Se descargan en `THUMB_DIR` la primera vez que alguien abre la galería, y se borran al desactivarla o con `/desconectar`.
 
 ### Datos para proveedores S3 habituales
 
@@ -97,7 +117,7 @@ Si alguien revoca el acceso a la cuenta o borra la carpeta raíz, el bot avisa e
 | Backblaze B2 | `https://s3.<región>.backblazeb2.com` | p. ej. `us-west-004` |
 | MinIO | `https://minio.tudominio.com` | `us-east-1` (o la configurada) |
 
-Usa claves limitadas a ese bucket, con permiso de escritura.
+Usa claves limitadas a ese bucket, con permiso de escritura y, si vais a usar la galería web, también de lectura (`s3:GetObject`).
 
 ## Variables de entorno
 
@@ -122,7 +142,7 @@ Usa claves limitadas a ese bucket, con permiso de escritura.
 | `MAX_ATTEMPTS` | no | Reintentos antes de marcar un archivo como fallido (5) |
 | `SUCCESS_REACTION` | no | Reacción al guardar (👍; vacío = ninguna) |
 | `ALLOWED_CONFIGURATORS` | no | IDs de Telegram que pueden usar `/configurar`, separados por comas (vacío = cualquier admin) |
-| `DATABASE_PATH`, `TEMP_DIR` | no | Rutas de la base de datos y temporales (`/data/...` en Docker) |
+| `DATABASE_PATH`, `TEMP_DIR`, `THUMB_DIR` | no | Rutas de la base de datos, los temporales y las vistas previas de la galería (`/data/...` en Docker) |
 | `WEB_HOST`, `WEB_PORT` | no | Dónde escucha el servidor web (`0.0.0.0:8080`) |
 | `LOG_LEVEL` | no | `INFO` por defecto |
 
@@ -172,6 +192,7 @@ No hace falta un VPS: el bot pide los mensajes a Telegram (*polling*), así que 
    - bucket: `fotos`
    - claves: `test` y `test`
 6. **Envía una foto al grupo**: el bot reacciona con 👍. Lo guardado se ve en <http://localhost:9000/fotos> o en el panel <http://localhost:9000/moto-api/>.
+7. **Abre la galería**: escribe `/galeria` en el grupo y abre el enlace (`http://localhost:8080/g/…`). Las miniaturas se piden a Telegram la primera vez.
 
 **Ten en cuenta:**
 
@@ -201,13 +222,15 @@ Código (`src/telebot_photos/`):
 | `__main__.py` | Arranque: bot (polling), servidor web y workers en el mismo event loop |
 | `bot/setup.py` | `/configurar`, deep link y conversación privada (OAuth y S3) |
 | `bot/media.py` | Captura de la multimedia y encolado |
-| `bot/admin.py` | `/estado`, `/enlace`, `/pausar`, `/reanudar`, `/desconectar`, migración de grupos |
+| `bot/admin.py` | `/estado`, `/enlace`, `/galeria`, `/pausar`, `/reanudar`, `/desconectar`, migración de grupos |
 | `worker.py` | Descarga desde Telegram, subida, reintentos, reacciones y avisos |
 | `exif.py` | Remitente y comentario en el EXIF de las fotos, sin recomprimirlas |
 | `storage/` | Backends `gdrive.py`, `onedrive.py` y `s3.py`, con subidas por partes |
 | `oauth/` | Cliente OAuth 2.0 y refresco de tokens |
 | `web.py` | Página principal, `/privacy`, callbacks OAuth y `/health` |
-| `db.py` | SQLite: configuración por chat, tokens de un solo uso y cola de subidas |
+| `gallery.py`, `static/` | Galería web de solo lectura (`/g/<enlace>`): página, API, miniaturas y archivos |
+| `thumbs.py` | Vistas previas de la galería, descargadas de Telegram la primera vez que se ven |
+| `db.py` | SQLite: configuración por chat, tokens de un solo uso, cola de subidas y galerías |
 
 Despliegue:
 

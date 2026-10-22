@@ -95,6 +95,38 @@ class GoogleDriveBackend:
                 self._subfolders[name] = folder["id"]
             return self._subfolders[name]
 
+    async def set_public_link(self, public: bool) -> None:
+        """Let anyone with the folder link view it (read only), or take that access away.
+
+        Everything inside the folder, including later uploads, inherits the setting.
+        """
+        url = f"{API}/files/{self._root_id}/permissions"
+        response = await self._api.request(
+            "GET", url, params={"fields": "permissions(id,type,role)"}
+        )
+        if response.status_code == 404:
+            raise StorageAuthError(
+                f"La carpeta de {PROVIDER} ya no existe o el bot perdió el acceso"
+            )
+        _check(response)
+        read_only = False
+        for permission in response.json().get("permissions", []):
+            if permission.get("type") != "anyone":
+                continue
+            if public and permission.get("role") == "reader":
+                read_only = True
+                continue
+            # Link access that could edit or comment goes away too, so it ends up read only.
+            _check(await self._api.request("DELETE", f"{url}/{permission['id']}"))
+        if public and not read_only:
+            response = await self._api.request(
+                "POST",
+                url,
+                params={"fields": "id"},
+                json={"type": "anyone", "role": "reader", "allowFileDiscovery": False},
+            )
+            _check(response)
+
     async def upload(self, request: UploadRequest) -> str:
         parent = await self._subfolder(request.folder)
         metadata: dict[str, object] = {"name": request.name, "parents": [parent]}

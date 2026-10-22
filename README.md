@@ -82,6 +82,7 @@ Si solo configuras Google o solo Microsoft, el otro proveedor simplemente no apa
 | `/configurar` | admins | Conecta o cambia el almacenamiento del grupo |
 | `/estado` | todos | Proveedor, carpeta, archivos guardados, pendientes y con error |
 | `/enlace` | todos | Enlace a la carpeta (Drive/OneDrive) o ubicación en S3 |
+| `/enlace publico` · `/enlace privado` | admins | Google Drive: abre la carpeta en **solo lectura** a cualquiera con el enlace, para que nadie tenga que pedir acceso, o la vuelve a cerrar |
 | `/pausar` · `/reanudar` | admins | Deja de guardar o vuelve a hacerlo |
 | `/desconectar` | admins | Borra las credenciales y la cola del grupo (no toca lo ya guardado) |
 | `/ayuda` | todos | Ayuda |

@@ -85,6 +85,32 @@ async def test_upload_session_in_chunks(http, tokens, tmp_path, monkeypatch):
 
 
 @respx.mock
+async def test_upload_without_description_when_the_drive_rejects_it(http, tokens, tmp_path):
+    respx.post(url__regex=r".*/children$").respond(409)
+    respx.get(url__regex=r".*/root:/T/2026-10:(\?.*)?$").respond(json={"id": "f", "webUrl": "u"})
+    session = respx.post(url__regex=r".*createUploadSession$").mock(
+        side_effect=[
+            httpx.Response(400, json={"error": {"message": "Invalid request"}}),
+            httpx.Response(200, json={"uploadUrl": UPLOAD_URL}),
+            httpx.Response(200, json={"uploadUrl": UPLOAD_URL}),
+        ]
+    )
+    respx.put(UPLOAD_URL).respond(201, json={"id": "item-id"})
+    source = tmp_path / "a.jpg"
+    source.write_bytes(b"1")
+    backend = onedrive.OneDriveBackend(http, tokens, "T")
+    request = UploadRequest(source, "2026-10", "a.jpg", "image/jpeg", 1, sender="Ana (@ana)")
+
+    assert await backend.upload(request) == "item-id"
+    assert await backend.upload(request) == "item-id"
+
+    items = [json.loads(call.request.content)["item"] for call in session.calls]
+    assert "description" in items[0]
+    # The retry and later uploads no longer send it.
+    assert items[1] == items[2] == {"@microsoft.graph.conflictBehavior": "rename"}
+
+
+@respx.mock
 async def test_full_drive_is_permanent_and_session_is_cancelled(http, tokens, tmp_path):
     respx.post(url__regex=r".*/children$").respond(409)
     respx.get(url__regex=r".*/root:/T/2026-10:(\?.*)?$").respond(json={"id": "f", "webUrl": "u"})

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from urllib.parse import quote
 
 import httpx
@@ -16,6 +17,8 @@ GRAPH = "https://graph.microsoft.com/v1.0"
 # Must be a multiple of 320 KiB.
 CHUNK_SIZE = 32 * 320 * 1024
 PROVIDER = "OneDrive"
+
+log = logging.getLogger(__name__)
 
 
 def _item_url(path: str) -> str:
@@ -55,6 +58,8 @@ class OneDriveBackend:
         self._root = root_path.strip("/")
         self._ready_folders: set[str] = set()
         self._folder_lock = asyncio.Lock()
+        # Only OneDrive Personal has descriptions: work and school drives reject the field.
+        self._descriptions = True
 
     async def _ensure(self, folder: str) -> None:
         async with self._folder_lock:
@@ -77,11 +82,15 @@ class OneDriveBackend:
             return response.json()["id"]
 
         item: dict[str, object] = {"@microsoft.graph.conflictBehavior": "rename"}
-        if request.description:
+        if request.description and self._descriptions:
             item["description"] = request.description[:1000]
-        response = await self._api.request(
-            "POST", f"{_item_url(path)}/createUploadSession", json={"item": item}
-        )
+        session_url = f"{_item_url(path)}/createUploadSession"
+        response = await self._api.request("POST", session_url, json={"item": item})
+        if response.status_code == 400 and "description" in item:
+            log.info("%s rejected the description, uploading without it", PROVIDER)
+            self._descriptions = False
+            del item["description"]
+            response = await self._api.request("POST", session_url, json={"item": item})
         if response.status_code == 404:
             self._ready_folders.discard(request.folder)
             raise StorageError(f"La carpeta {request.folder} ya no existe en {PROVIDER}")

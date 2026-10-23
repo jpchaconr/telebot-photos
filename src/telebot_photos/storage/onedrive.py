@@ -10,7 +10,7 @@ from urllib.parse import quote
 import httpx
 
 from ..oauth.base import TokenManager
-from ._http import AuthorizedHttp, raise_for_status, read_range
+from ._http import AuthorizedHttp, error_message, raise_for_status, read_range
 from .base import StorageAuthError, StorageError, UploadRequest
 
 GRAPH = "https://graph.microsoft.com/v1.0"
@@ -69,6 +69,12 @@ class OneDriveBackend:
 
     async def upload(self, request: UploadRequest) -> str:
         await self._ensure(request.folder)
+        item_id = await self._upload(request)
+        if request.description and self._descriptions:
+            await self._describe(item_id, request.description)
+        return item_id
+
+    async def _upload(self, request: UploadRequest) -> str:
         path = f"{self._root}/{request.folder}/{request.name}"
 
         if request.size == 0:
@@ -81,16 +87,13 @@ class OneDriveBackend:
             raise_for_status(response, PROVIDER)
             return response.json()["id"]
 
-        item: dict[str, object] = {"@microsoft.graph.conflictBehavior": "rename"}
-        if request.description and self._descriptions:
-            item["description"] = request.description[:1000]
-        session_url = f"{_item_url(path)}/createUploadSession"
-        response = await self._api.request("POST", session_url, json={"item": item})
-        if response.status_code == 400 and "description" in item:
-            log.info("%s rejected the description, uploading without it", PROVIDER)
-            self._descriptions = False
-            del item["description"]
-            response = await self._api.request("POST", session_url, json={"item": item})
+        # The description goes in a later PATCH: Graph answers 400 "Invalid request" when the
+        # upload session carries one, even on OneDrive Personal.
+        response = await self._api.request(
+            "POST",
+            f"{_item_url(path)}/createUploadSession",
+            json={"item": {"@microsoft.graph.conflictBehavior": "rename"}},
+        )
         if response.status_code == 404:
             self._ready_folders.discard(request.folder)
             raise StorageError(f"La carpeta {request.folder} ya no existe en {PROVIDER}")
@@ -104,6 +107,28 @@ class OneDriveBackend:
             with contextlib.suppress(StorageError):
                 await self._api.request("DELETE", upload_url, authorize=False)
             raise
+
+    async def _describe(self, item_id: str, description: str) -> None:
+        """Set the item's description (best effort: the file is already saved)."""
+        try:
+            response = await self._api.request(
+                "PATCH",
+                f"{GRAPH}/me/drive/items/{item_id}",
+                json={"description": description[:1000]},
+            )
+        except StorageError as exc:
+            log.warning("Could not set the description of %s: %s", item_id, exc)
+            return
+        if response.status_code == 400:
+            log.info("%s rejected the description, not sending it any more", PROVIDER)
+            self._descriptions = False
+        elif response.status_code >= 400:
+            log.warning(
+                "Could not set the description of %s: %s %s",
+                item_id,
+                response.status_code,
+                error_message(response),
+            )
 
     async def _send_chunks(self, upload_url: str, request: UploadRequest) -> str:
         offset = 0

@@ -65,6 +65,7 @@ async def test_upload_session_in_chunks(http, tokens, tmp_path, monkeypatch):
             httpx.Response(201, json={"id": "item-id"}),
         ]
     )
+    describe = respx.patch(f"{GRAPH}/items/item-id").respond(json={"id": "item-id"})
     source = tmp_path / "a.mp4"
     source.write_bytes(b"12345")
     backend = onedrive.OneDriveBackend(http, tokens, "/Telegram/")
@@ -75,39 +76,35 @@ async def test_upload_session_in_chunks(http, tokens, tmp_path, monkeypatch):
 
     assert ref == "item-id"
     item = json.loads(session.calls[0].request.content)["item"]
-    assert item == {
-        "@microsoft.graph.conflictBehavior": "rename",
-        "description": "Comentario: vídeo",
-    }
+    assert item == {"@microsoft.graph.conflictBehavior": "rename"}
+    assert json.loads(describe.calls[0].request.content) == {"description": "Comentario: vídeo"}
     assert chunks.calls[0].request.headers["Content-Range"] == "bytes 0-2/5"
     assert chunks.calls[1].request.headers["Content-Range"] == "bytes 3-4/5"
     assert "Authorization" not in chunks.calls[0].request.headers
 
 
 @respx.mock
-async def test_upload_without_description_when_the_drive_rejects_it(http, tokens, tmp_path):
+async def test_description_failures_do_not_fail_the_upload(http, tokens, tmp_path):
     respx.post(url__regex=r".*/children$").respond(409)
     respx.get(url__regex=r".*/root:/T/2026-10:(\?.*)?$").respond(json={"id": "f", "webUrl": "u"})
-    session = respx.post(url__regex=r".*createUploadSession$").mock(
+    respx.post(url__regex=r".*createUploadSession$").respond(json={"uploadUrl": UPLOAD_URL})
+    respx.put(UPLOAD_URL).respond(201, json={"id": "item-id"})
+    describe = respx.patch(f"{GRAPH}/items/item-id").mock(
         side_effect=[
+            httpx.Response(503, json={"error": {"message": "Service unavailable"}}),
             httpx.Response(400, json={"error": {"message": "Invalid request"}}),
-            httpx.Response(200, json={"uploadUrl": UPLOAD_URL}),
-            httpx.Response(200, json={"uploadUrl": UPLOAD_URL}),
         ]
     )
-    respx.put(UPLOAD_URL).respond(201, json={"id": "item-id"})
     source = tmp_path / "a.jpg"
     source.write_bytes(b"1")
     backend = onedrive.OneDriveBackend(http, tokens, "T")
     request = UploadRequest(source, "2026-10", "a.jpg", "image/jpeg", 1, sender="Ana (@ana)")
 
-    assert await backend.upload(request) == "item-id"
-    assert await backend.upload(request) == "item-id"
+    for _ in range(3):
+        assert await backend.upload(request) == "item-id"
 
-    items = [json.loads(call.request.content)["item"] for call in session.calls]
-    assert "description" in items[0]
-    # The retry and later uploads no longer send it.
-    assert items[1] == items[2] == {"@microsoft.graph.conflictBehavior": "rename"}
+    # A transient error is tried again with the next file; a 400 stops the PATCH for good.
+    assert describe.call_count == 2
 
 
 @respx.mock

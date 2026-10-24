@@ -17,6 +17,8 @@ def help_text(services: Services) -> str:
         "/configurar – conectar o cambiar el almacenamiento (admins)\n"
         "/estado – dónde se guarda y cuántos archivos llevo\n"
         "/enlace – enlace a la carpeta\n"
+        "/enlace publico y /enlace privado – abrir la carpeta de Google Drive en solo lectura "
+        "a cualquiera con el enlace, o cerrarla (admins)\n"
         "/galeria – ver las fotos y vídeos del grupo en una web (la activa un admin)\n"
         "/pausar y /reanudar – detener o reanudar el guardado (admins)\n"
         "/desconectar – olvidar el almacenamiento de este grupo (admins)\n"

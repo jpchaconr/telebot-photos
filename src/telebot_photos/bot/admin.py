@@ -38,6 +38,9 @@ from .texts import WELCOME, help_text
 log = logging.getLogger(__name__)
 
 NOT_CONFIGURED = "Este grupo aún no tiene almacenamiento. Un administrador puede usar /configurar."
+# Arguments of /enlace that open the folder to anyone with the link or close it again.
+PUBLIC_OPTIONS = {"publico", "público", "public"}
+PRIVATE_OPTIONS = {"privado", "private"}
 GALLERY_OFF = (
     "La galería web de este grupo no está activada. Un administrador puede activarla con /galeria."
 )
@@ -101,12 +104,20 @@ async def link_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     message = update.effective_message
     if message is None or not _in_group(update):
         return
+    if context.args:
+        await _set_link_access(update, context, context.args[0].lower())
+        return
     chat = await get_services(context).db.get_chat(message.chat_id)
     if chat is None:
         await message.reply_text(NOT_CONFIGURED)
         return
     url = chat.settings.get("folder_url")
-    if url:
+    if url and chat.provider == "gdrive":
+        await message.reply_text(
+            f"📁 Carpeta en {PROVIDER_NAMES['gdrive']}: {url}\n"
+            "(Si pide acceso, un administrador puede abrirla en solo lectura con /enlace publico.)"
+        )
+    elif url:
         await message.reply_text(
             f"📁 Carpeta en {PROVIDER_NAMES.get(chat.provider)}: {url}\n"
             "(Solo podrá abrirla quien tenga acceso a esa cuenta o a quien se la compartan.)"
@@ -114,6 +125,51 @@ async def link_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     else:
         await message.reply_text(
             f"📁 Los archivos se guardan en {describe_location(chat.provider, chat.settings)}"
+        )
+
+
+async def _set_link_access(update: Update, context: ContextTypes.DEFAULT_TYPE, option: str) -> None:
+    """/enlace publico | privado: open the Drive folder to anyone with the link, read only."""
+    message = update.effective_message
+    if message is None:
+        return
+    if option not in PUBLIC_OPTIONS | PRIVATE_OPTIONS:
+        await message.reply_text(
+            "Usa /enlace para ver el enlace de la carpeta, /enlace publico para que cualquiera "
+            "con el enlace pueda verla (solo lectura) o /enlace privado para cerrarla."
+        )
+        return
+    services = get_services(context)
+    if not await require_group_admin(update, context.bot, services.settings):
+        return
+    chat = await services.db.get_chat(message.chat_id)
+    if chat is None:
+        await message.reply_text(NOT_CONFIGURED)
+        return
+    if chat.provider != "gdrive":
+        await message.reply_text(
+            "Solo puedo abrir o cerrar el enlace de la carpeta con Google Drive, y este grupo "
+            f"usa {PROVIDER_NAMES.get(chat.provider, chat.provider)}."
+        )
+        return
+    public = option in PUBLIC_OPTIONS
+    try:
+        await services.backends.get(chat).set_public_link(public)
+    except StorageError as exc:
+        log.warning("Could not change link sharing for chat %s: %s", chat.chat_id, exc)
+        await message.reply_text(f"❌ No pude cambiar el acceso a la carpeta: {exc}")
+        return
+    if public:
+        await message.reply_text(
+            "🔓 Carpeta abierta en solo lectura: cualquiera con el enlace puede ver los "
+            "archivos, pero no cambiarlos ni borrarlos. También quien reciba el enlace fuera "
+            f"del grupo.\n📁 {chat.settings.get('folder_url')}\n\n"
+            "Para volver a cerrarla: /enlace privado"
+        )
+    else:
+        await message.reply_text(
+            "🔒 Carpeta cerrada: solo podrá abrirla quien tenga acceso a la cuenta o a quien "
+            "se la compartan.\n\nPara abrirla en solo lectura: /enlace publico"
         )
 
 

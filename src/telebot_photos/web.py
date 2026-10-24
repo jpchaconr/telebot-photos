@@ -117,8 +117,10 @@ borran después.</li>
 administrador. No se usan con fines publicitarios, no se venden y no se ceden a terceros.</p>
 <h2>Datos de Google</h2>
 <p>El bot solo pide el permiso <code>drive.file</code>: puede crear carpetas y archivos en tu
-Google Drive y acceder únicamente a los que él mismo ha creado. El uso y la transferencia de
-la información recibida de las API de Google cumplen la
+Google Drive y acceder únicamente a los que él mismo ha creado. Si un administrador del grupo
+usa /enlace publico, el bot cambia el acceso de la carpeta del grupo para que cualquiera con el
+enlace pueda ver su contenido (solo lectura); /enlace privado lo deshace. El uso y la
+transferencia de la información recibida de las API de Google cumplen la
 <a href="https://developers.google.com/terms/api-services-user-data-policy">Política de
 datos de usuario de los servicios de las API de Google</a>, incluidos los requisitos de uso
 limitado (Limited Use).</p>

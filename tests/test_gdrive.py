@@ -134,3 +134,75 @@ async def test_quota_exceeded_is_permanent(http, tokens, tmp_path: Path):
     backend = gdrive.GoogleDriveBackend(http, tokens, "root")
     with pytest.raises(PermanentStorageError, match="espacio"):
         await backend.upload(UploadRequest(source, "2026-10", "a.jpg", "image/jpeg", 1))
+
+
+PERMISSIONS_URL = "https://www.googleapis.com/drive/v3/files/root/permissions"
+
+
+@respx.mock
+async def test_public_link_is_read_only(http, tokens):
+    respx.post(TOKEN_URL).respond(json={"access_token": "new", "expires_in": 3600})
+    respx.get(PERMISSIONS_URL).respond(
+        json={
+            "permissions": [
+                {"id": "owner", "type": "user", "role": "owner"},
+                {"id": "anyoneWithLink", "type": "anyone", "role": "writer"},
+            ]
+        }
+    )
+    removed = respx.delete(PERMISSIONS_URL + "/anyoneWithLink").respond(204)
+    created = respx.post(PERMISSIONS_URL).respond(json={"id": "anyoneWithLink"})
+
+    await gdrive.GoogleDriveBackend(http, tokens, "root").set_public_link(True)
+
+    # Editing through the link is replaced by read only access.
+    assert removed.called
+    assert json.loads(created.calls[0].request.content) == {
+        "type": "anyone",
+        "role": "reader",
+        "allowFileDiscovery": False,
+    }
+
+
+@respx.mock
+async def test_public_link_already_read_only_is_left_alone(http, tokens):
+    respx.post(TOKEN_URL).respond(json={"access_token": "new", "expires_in": 3600})
+    respx.get(PERMISSIONS_URL).respond(
+        json={"permissions": [{"id": "anyoneWithLink", "type": "anyone", "role": "reader"}]}
+    )
+    created = respx.post(PERMISSIONS_URL).respond(json={"id": "x"})
+
+    await gdrive.GoogleDriveBackend(http, tokens, "root").set_public_link(True)
+
+    assert not created.called
+
+
+@respx.mock
+async def test_private_link_keeps_people_it_was_shared_with(http, tokens):
+    respx.post(TOKEN_URL).respond(json={"access_token": "new", "expires_in": 3600})
+    respx.get(PERMISSIONS_URL).respond(
+        json={
+            "permissions": [
+                {"id": "owner", "type": "user", "role": "owner"},
+                {"id": "luis", "type": "user", "role": "reader"},
+                {"id": "anyoneWithLink", "type": "anyone", "role": "reader"},
+            ]
+        }
+    )
+    removed = respx.delete(url__startswith=PERMISSIONS_URL + "/").respond(204)
+    created = respx.post(PERMISSIONS_URL).respond(json={"id": "x"})
+
+    await gdrive.GoogleDriveBackend(http, tokens, "root").set_public_link(False)
+
+    assert [str(call.request.url) for call in removed.calls] == [
+        PERMISSIONS_URL + "/anyoneWithLink"
+    ]
+    assert not created.called
+
+
+@respx.mock
+async def test_public_link_of_a_deleted_folder(http, tokens):
+    respx.post(TOKEN_URL).respond(json={"access_token": "new", "expires_in": 3600})
+    respx.get(PERMISSIONS_URL).respond(404, json={"error": {"message": "File not found"}})
+    with pytest.raises(StorageAuthError, match="ya no existe"):
+        await gdrive.GoogleDriveBackend(http, tokens, "root").set_public_link(True)

@@ -255,6 +255,15 @@ def google_api():
             "put": router.put("https://upload.google.test/session").respond(
                 200, json={"id": "drive-file"}
             ),
+            "permissions": router.get(gdrive.API + "/files/folder-x/permissions").respond(
+                json={"permissions": [{"id": "owner", "type": "user", "role": "owner"}]}
+            ),
+            "share": router.post(gdrive.API + "/files/folder-x/permissions").respond(
+                json={"id": "anyoneWithLink"}
+            ),
+            "unshare": router.delete(
+                gdrive.API + "/files/folder-x/permissions/anyoneWithLink"
+            ).respond(204),
         }
         yield routes
 
@@ -293,3 +302,18 @@ async def test_configure_google_drive_and_save_a_photo(google_api, running: Fake
     api.message(GROUP, "/enlace")
     link = await api.wait_for("sendMessage", lambda p: "Carpeta en" in p["text"])
     assert "https://drive.google.com/x" in link["text"]
+    assert "/enlace publico" in link["text"]
+
+    # An admin opens the folder to anyone with the link, read only, and closes it again.
+    api.message(GROUP, "/enlace publico")
+    opened = await api.wait_for("sendMessage", lambda p: "solo lectura:" in p["text"])
+    assert "https://drive.google.com/x" in opened["text"]
+    assert json.loads(google_api["share"].calls[0].request.content)["role"] == "reader"
+
+    google_api["permissions"].respond(
+        json={"permissions": [{"id": "anyoneWithLink", "type": "anyone", "role": "reader"}]}
+    )
+    api.message(GROUP, "/enlace privado")
+    await api.wait_for("sendMessage", lambda p: "Carpeta cerrada" in p["text"])
+    assert google_api["unshare"].called
+    assert google_api["share"].call_count == 1

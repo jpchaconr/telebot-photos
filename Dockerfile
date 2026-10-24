@@ -19,7 +19,8 @@ RUN groupadd --system --gid 101 bot \
 USER bot
 
 ENV DATABASE_PATH=/data/bot.db \
-    TEMP_DIR=/data/tmp
+    TEMP_DIR=/data/tmp \
+    THUMB_DIR=/data/thumbs
 VOLUME ["/data"]
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s \

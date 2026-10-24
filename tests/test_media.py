@@ -34,6 +34,20 @@ def test_photo_takes_biggest_size():
     assert info.kind == "photo" and info.file_id == "big" and info.file_unique_id == "u-big"
 
 
+def test_previews_for_the_gallery():
+    sizes = [
+        PhotoSize("s", "u-s", 90, 60, file_size=100),
+        PhotoSize("m", "u-m", 320, 213, file_size=900),
+        PhotoSize("x", "u-x", 800, 533, file_size=5000),
+    ]
+    assert extract_media(message(photo=sizes)).thumb_file_id == "m"
+    # Without a 320 px size, the smallest one that is big enough.
+    assert extract_media(message(photo=photo_sizes())).thumb_file_id == "big"
+    clip = Video("vid", "u-vid", 1920, 1080, 6, thumbnail=PhotoSize("t", "u-t", 320, 180))
+    assert extract_media(message(video=clip)).thumb_file_id == "t"
+    assert extract_media(message(video=Video("v", "u-v", 10, 10, 1))).thumb_file_id is None
+
+
 def test_gif_is_an_animation_not_a_document():
     animation = Animation("anim", "u-anim", 10, 10, 1, file_name="x.mp4", mime_type="video/mp4")
     document = Document("anim", "u-anim", file_name="x.mp4", mime_type="video/mp4")

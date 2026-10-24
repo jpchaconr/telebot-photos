@@ -13,6 +13,19 @@ from .onedrive import OneDriveBackend
 from .s3 import S3Backend
 
 
+def storage_location(chat: ChatConfig) -> str:
+    """Identify where a chat's files go, to tell apart files left in a previous storage."""
+    settings = chat.settings
+    if chat.provider == "gdrive":
+        return f"gdrive:{settings.get('folder_id', '')}"
+    if chat.provider == "onedrive":
+        return f"onedrive:{settings.get('root_path', '')}"
+    if chat.provider == "s3":
+        endpoint = settings.get("endpoint_url") or "aws"
+        return f"s3:{endpoint}/{settings.get('bucket', '')}/{settings.get('prefix', '')}"
+    return chat.provider
+
+
 class BackendRegistry:
     def __init__(
         self, db: Database, http: httpx.AsyncClient, oauth_clients: dict[str, OAuth2Client]

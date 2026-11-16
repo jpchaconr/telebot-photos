@@ -134,6 +134,7 @@ Usa claves limitadas a ese bucket, con permiso de escritura y, si vais a usar la
 | `ENCRYPTION_KEY` | sí | Clave Fernet para cifrar credenciales (`openssl rand -base64 32 \| tr '+/' '-_'`) |
 | `DUCKDNS_TOKEN` | con DuckDNS | Lo usa `deploy/duckdns-update.sh` para mantener el dominio apuntando a la IP |
 | `CONTACT_EMAIL` | no | Email de contacto que aparece en `/privacy` |
+| `APP_NAME` | no | Nombre de la app en la página principal y en `/privacy`. Para verificar la marca en Google, el mismo que en su pantalla de permiso |
 | `BOT_TAG`, `BOT_IMAGE` | no | Imagen del bot (`ghcr.io/jpchaconr/telebot-photos:latest` por defecto); `deploy/update.sh` cambia la etiqueta |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | no | Habilitan Google Drive |
 | `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_TENANT` | no | Habilitan OneDrive (`MS_TENANT=common` por defecto) |

@@ -445,6 +445,13 @@ EOF
 	fi
 	ask_value ACME_EMAIL "Email para la cuenta de Let's Encrypt" \
 		'^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$'
+	if ! env_has APP_NAME; then
+		local app_name=${APP_NAME:-}
+		if [[ -z $app_name && $NONINTERACTIVE != 1 ]]; then
+			app_name=$(prompt "Nombre de la app para las páginas públicas, el mismo que en Google y Microsoft (Enter = ninguno)")
+		fi
+		env_set "$ENV_FILE" APP_NAME "$app_name"
+	fi
 	if ! env_has CONTACT_EMAIL; then
 		local contact=${CONTACT_EMAIL:-}
 		if [[ -z $contact && $NONINTERACTIVE != 1 ]]; then

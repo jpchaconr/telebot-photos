@@ -151,6 +151,7 @@ Hazlo con el bot ya instalado, porque Google comprueba la página principal y la
 **Notas**
 
 - Como la marca no está verificada, Google muestra el dominio en vez del nombre de la app en la pantalla de permiso. Para un bot privado es normal.
+- **Si quieres verificar la marca** (para que la pantalla de permiso muestre el nombre y el logo), la página principal tiene que mostrar el mismo nombre que pusiste en *Branding*: ponlo en `APP_NAME` en `.env` y aplica el cambio con `sudo docker compose up -d`. Necesitas además verificar el dominio en Search Console con la cuenta propietaria del proyecto, y después subir el logo y enviar la verificación desde *Branding*.
 - **Opcional**: si quieres verificar el dominio (Google Search Console → propiedad de tipo *Dominio*), DuckDNS permite fijar el registro TXT que te den:
   ```bash
   curl "https://www.duckdns.org/update?domains=SUBDOMINIO&token=TOKEN&txt=google-site-verification=XXXX"

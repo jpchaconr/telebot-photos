@@ -72,14 +72,55 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 CREATE INDEX IF NOT EXISTS jobs_pending ON jobs (status, next_attempt_at);
+
+CREATE TABLE IF NOT EXISTS galleries (
+    chat_id INTEGER PRIMARY KEY,
+    token TEXT NOT NULL UNIQUE,
+    created_by INTEGER NOT NULL,
+    created_at REAL NOT NULL
+);
 """
 
 # Columns added to ``jobs`` after the first release: older databases get them on startup.
-JOB_MIGRATIONS = {"sender_id": "INTEGER", "sender_label": "TEXT"}
+JOB_MIGRATIONS = {
+    "sender_id": "INTEGER",
+    "sender_label": "TEXT",
+    "thumb_file_id": "TEXT",
+    # Where the file was uploaded (see ``storage_location``), so that the gallery hides files
+    # left in a previous storage after the chat is reconfigured.
+    "location": "TEXT",
+}
+
+# Created after the migrations because it uses columns they add.
+INDEXES = "CREATE INDEX IF NOT EXISTS jobs_gallery ON jobs (chat_id, status, sent_at);"
 
 JOB_COLUMNS = (
     "id, chat_id, message_id, file_id, file_unique_id, kind, file_name, mime_type, file_size,"
-    " caption, sender_name, sender_id, sender_label, sent_at, attempts"
+    " caption, sender_name, sender_id, sender_label, sent_at, thumb_file_id, attempts"
+)
+
+GALLERY_COLUMNS = (
+    "id, kind, file_name, mime_type, file_size, caption, sender_name, sender_id, sender_label,"
+    " sent_at, message_id, thumb_file_id, remote_ref"
+)
+
+# What the gallery shows: Telegram's photos, videos and GIFs, and documents that browsers can
+# display safely (never SVG or HTML, which could run scripts).
+GALLERY_KINDS = ("photo", "video", "animation", "video_note")
+GALLERY_DOCUMENT_TYPES = (
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+    "video/mp4",
+    "video/webm",
+    "video/quicktime",
+)
+_GALLERY_FILTER = (
+    f"jobs.status = 'done' AND (jobs.kind IN ({', '.join('?' * len(GALLERY_KINDS))})"
+    f" OR (jobs.kind = 'document' AND jobs.mime_type IN"
+    f" ({', '.join('?' * len(GALLERY_DOCUMENT_TYPES))})))"
+    " AND (jobs.location = ? OR jobs.location IS NULL)"
 )
 
 
@@ -129,12 +170,38 @@ class NewJob:
     sender_id: int | None
     sender_label: str | None
     sent_at: float
+    # A small preview (~320 px) Telegram keeps for the media, used by the web gallery.
+    thumb_file_id: str | None
 
 
 @dataclass
 class Job(NewJob):
     id: int
     attempts: int
+
+
+@dataclass
+class GalleryItem:
+    id: int
+    kind: str
+    file_name: str | None
+    mime_type: str | None
+    file_size: int | None
+    caption: str | None
+    sender_name: str
+    sender_id: int | None
+    sender_label: str | None
+    sent_at: float
+    message_id: int
+    thumb_file_id: str | None
+    remote_ref: str
+
+
+@dataclass
+class GallerySender:
+    sender_id: int
+    label: str
+    count: int
 
 
 class Database:
@@ -162,6 +229,7 @@ class Database:
         for column, definition in JOB_MIGRATIONS.items():
             if column not in existing:
                 await self._conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
+        await self._conn.executescript(INDEXES)
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -272,6 +340,7 @@ class Database:
             try:
                 cursor = await self.conn.execute("DELETE FROM chats WHERE chat_id = ?", (chat_id,))
                 await self.conn.execute("DELETE FROM jobs WHERE chat_id = ?", (chat_id,))
+                await self.conn.execute("DELETE FROM galleries WHERE chat_id = ?", (chat_id,))
             except BaseException:
                 await self.conn.execute("ROLLBACK")
                 raise
@@ -289,6 +358,10 @@ class Database:
                 )
                 await self.conn.execute(
                     "UPDATE OR IGNORE jobs SET chat_id = ? WHERE chat_id = ?",
+                    (new_chat_id, old_chat_id),
+                )
+                await self.conn.execute(
+                    "UPDATE OR IGNORE galleries SET chat_id = ? WHERE chat_id = ?",
                     (new_chat_id, old_chat_id),
                 )
             except BaseException:
@@ -363,8 +436,8 @@ class Database:
                 """
                 INSERT OR IGNORE INTO jobs (chat_id, message_id, file_id, file_unique_id, kind,
                     file_name, mime_type, file_size, caption, sender_name, sender_id,
-                    sender_label, sent_at, next_attempt_at, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    sender_label, sent_at, thumb_file_id, next_attempt_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.chat_id,
@@ -380,6 +453,7 @@ class Database:
                     job.sender_id,
                     job.sender_label,
                     job.sent_at,
+                    job.thumb_file_id,
                     now,
                     now,
                     now,
@@ -407,12 +481,12 @@ class Database:
             )
         return Job(**dict(row)) if row else None
 
-    async def complete_job(self, job_id: int, remote_ref: str) -> None:
+    async def complete_job(self, job_id: int, remote_ref: str, location: str | None) -> None:
         async with self._lock:
             await self.conn.execute(
-                "UPDATE jobs SET status = 'done', remote_ref = ?, last_error = NULL, updated_at = ?"
-                " WHERE id = ?",
-                (remote_ref, time.time(), job_id),
+                "UPDATE jobs SET status = 'done', remote_ref = ?, location = ?, last_error = NULL,"
+                " updated_at = ? WHERE id = ?",
+                (remote_ref, location, time.time(), job_id),
             )
 
     async def retry_job(
@@ -451,3 +525,105 @@ class Database:
         stats = {"pending": 0, "in_progress": 0, "done": 0, "failed": 0}
         stats.update({row["status"]: row["n"] for row in rows})
         return stats
+
+    # --- web gallery -----------------------------------------------------------
+
+    async def create_gallery(self, chat_id: int, user_id: int) -> str:
+        """Give the chat a new secret gallery link; any previous one stops working."""
+        token = secrets.token_urlsafe(24)
+        async with self._lock:
+            await self.conn.execute(
+                "INSERT INTO galleries (chat_id, token, created_by, created_at) VALUES (?, ?, ?, ?)"
+                " ON CONFLICT (chat_id) DO UPDATE SET token = excluded.token,"
+                " created_by = excluded.created_by, created_at = excluded.created_at",
+                (chat_id, token, user_id, time.time()),
+            )
+        return token
+
+    async def get_gallery_token(self, chat_id: int) -> str | None:
+        async with self._lock:
+            row = await self._fetchone("SELECT token FROM galleries WHERE chat_id = ?", (chat_id,))
+        return row["token"] if row else None
+
+    async def chat_for_gallery(self, token: str) -> int | None:
+        async with self._lock:
+            row = await self._fetchone("SELECT chat_id FROM galleries WHERE token = ?", (token,))
+        return row["chat_id"] if row else None
+
+    async def delete_gallery(self, chat_id: int) -> bool:
+        async with self._lock:
+            cursor = await self.conn.execute("DELETE FROM galleries WHERE chat_id = ?", (chat_id,))
+            return cursor.rowcount > 0
+
+    @staticmethod
+    def _gallery_params(chat_id: int, location: str) -> list[Any]:
+        return [chat_id, *GALLERY_KINDS, *GALLERY_DOCUMENT_TYPES, location]
+
+    async def gallery_items(
+        self,
+        chat_id: int,
+        location: str,
+        *,
+        before: tuple[float, int] | None = None,
+        sender_id: int | None = None,
+        start: float | None = None,
+        end: float | None = None,
+        limit: int = 60,
+    ) -> list[GalleryItem]:
+        """The chat's gallery, newest first. ``before`` is the (sent_at, id) of the last item
+        of the previous page; ``start``/``end`` limit ``sent_at`` to [start, end)."""
+        sql = f"SELECT {GALLERY_COLUMNS} FROM jobs WHERE jobs.chat_id = ? AND {_GALLERY_FILTER}"
+        params = self._gallery_params(chat_id, location)
+        if before is not None:
+            sql += " AND (sent_at < ? OR (sent_at = ? AND id < ?))"
+            params += [before[0], before[0], before[1]]
+        if sender_id is not None:
+            sql += " AND sender_id = ?"
+            params.append(sender_id)
+        if start is not None:
+            sql += " AND sent_at >= ?"
+            params.append(start)
+        if end is not None:
+            sql += " AND sent_at < ?"
+            params.append(end)
+        sql += " ORDER BY sent_at DESC, id DESC LIMIT ?"
+        params.append(limit)
+        async with self._lock:
+            rows = await self._fetchall(sql, tuple(params))
+        return [GalleryItem(**dict(row)) for row in rows]
+
+    async def gallery_item(self, chat_id: int, job_id: int, location: str) -> GalleryItem | None:
+        params = [job_id, *self._gallery_params(chat_id, location)]
+        async with self._lock:
+            row = await self._fetchone(
+                f"SELECT {GALLERY_COLUMNS} FROM jobs"
+                f" WHERE jobs.id = ? AND jobs.chat_id = ? AND {_GALLERY_FILTER}",
+                tuple(params),
+            )
+        return GalleryItem(**dict(row)) if row else None
+
+    async def gallery_senders(self, chat_id: int, location: str) -> list[GallerySender]:
+        """Who sent the gallery's files, with their latest name, most active first."""
+        async with self._lock:
+            rows = await self._fetchall(
+                f"""
+                SELECT sender_id, COUNT(*) AS n,
+                    (SELECT COALESCE(latest.sender_label, latest.sender_name) FROM jobs AS latest
+                     WHERE latest.chat_id = jobs.chat_id AND latest.sender_id = jobs.sender_id
+                     ORDER BY latest.sent_at DESC LIMIT 1) AS label
+                FROM jobs WHERE jobs.chat_id = ? AND {_GALLERY_FILTER}
+                    AND jobs.sender_id IS NOT NULL
+                GROUP BY sender_id ORDER BY n DESC, label
+                """,
+                tuple(self._gallery_params(chat_id, location)),
+            )
+        return [GallerySender(row["sender_id"], row["label"], row["n"]) for row in rows]
+
+    async def gallery_sent_times(self, chat_id: int, location: str) -> list[float]:
+        """``sent_at`` of every gallery file, to count them by month in the chat's timezone."""
+        async with self._lock:
+            rows = await self._fetchall(
+                f"SELECT sent_at FROM jobs WHERE jobs.chat_id = ? AND {_GALLERY_FILTER}",
+                tuple(self._gallery_params(chat_id, location)),
+            )
+        return [row["sent_at"] for row in rows]

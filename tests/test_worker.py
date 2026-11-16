@@ -99,6 +99,9 @@ async def test_successful_upload_reacts_and_cleans_up(worker, db, bot, backend, 
     assert bot.reactions == [(-100, 10, "👍")]
     assert (await db.job_stats(-100))["done"] == 1
     assert not (files_dir / "file-u1").exists()
+    # Recorded with where it went, for the gallery.
+    [item] = await db.gallery_items(-100, "s3:aws/fotos/telegram")
+    assert item.remote_ref == f"ref/{request.name}"
 
 
 def jpeg() -> bytes:

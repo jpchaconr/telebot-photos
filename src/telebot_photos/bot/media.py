@@ -6,7 +6,7 @@ import logging
 import math
 from dataclasses import dataclass
 
-from telegram import Message, ReplyParameters, Update
+from telegram import Message, PhotoSize, ReplyParameters, Update
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes, MessageHandler, filters
 
@@ -14,6 +14,9 @@ from ..db import NewJob
 from ..services import get_services
 
 log = logging.getLogger(__name__)
+
+# Smallest preview side wanted for the web gallery's grid (Telegram's "m" size is 320 px).
+THUMB_SIDE = 320
 
 MEDIA_FILTER = (
     filters.UpdateType.MESSAGE
@@ -38,18 +41,34 @@ class MediaInfo:
     file_name: str | None
     mime_type: str | None
     file_size: int | None
+    thumb_file_id: str | None = None
+
+
+def preview_size(sizes: tuple[PhotoSize, ...]) -> PhotoSize:
+    """The smallest size that still fills a gallery tile, or the biggest one available."""
+    big_enough = [size for size in sizes if max(size.width, size.height) >= THUMB_SIDE]
+    if big_enough:
+        return min(big_enough, key=lambda size: size.width * size.height)
+    return max(sizes, key=lambda size: size.width * size.height)
 
 
 def extract_media(message: Message) -> MediaInfo | None:
     if message.photo:
         photo = message.photo[-1]  # the biggest size
         return MediaInfo(
-            "photo", photo.file_id, photo.file_unique_id, None, "image/jpeg", photo.file_size
+            "photo",
+            photo.file_id,
+            photo.file_unique_id,
+            None,
+            "image/jpeg",
+            photo.file_size,
+            preview_size(message.photo).file_id,
         )
     # GIFs come with both ``animation`` and ``document``: check animation first.
     for kind in ("animation", "video", "video_note", "voice", "audio", "document"):
         media = getattr(message, kind)
         if media is not None:
+            thumbnail = getattr(media, "thumbnail", None)
             return MediaInfo(
                 kind,
                 media.file_id,
@@ -57,6 +76,7 @@ def extract_media(message: Message) -> MediaInfo | None:
                 getattr(media, "file_name", None),
                 getattr(media, "mime_type", None),
                 media.file_size,
+                thumbnail.file_id if thumbnail is not None else None,
             )
     return None
 
@@ -118,6 +138,7 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             sender_id=sender_id(message),
             sender_label=sender_label(message),
             sent_at=message.date.timestamp(),
+            thumb_file_id=info.thumb_file_id,
         )
     )
     if queued:

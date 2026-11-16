@@ -22,6 +22,7 @@ def settings(tmp_path: Path) -> Settings:
         encryption_key=Fernet.generate_key().decode(),
         database_path=tmp_path / "bot.db",
         temp_dir=tmp_path / "tmp",
+        thumb_dir=tmp_path / "thumbs",
         bot_api_url="http://telegram-bot-api:8081",
         google_client_id="google-id",
         google_client_secret="google-secret",
@@ -69,6 +70,7 @@ def new_job(chat_id: int = -100, message_id: int = 10, unique: str = "u1", **kw:
         "sender_id": 1,
         "sender_label": "Ana (@ana)",
         "sent_at": time.time(),
+        "thumb_file_id": None,
     }
     values.update(kw)
     return NewJob(**values)

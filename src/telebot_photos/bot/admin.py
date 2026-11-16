@@ -1,7 +1,8 @@
-"""Group commands: status, folder link, pause/resume, disconnect, help and housekeeping."""
+"""Group commands: status, folder link, gallery, pause/resume, disconnect, help and housekeeping."""
 
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 from datetime import datetime
@@ -24,9 +25,13 @@ from telegram.ext import (
     filters,
 )
 
-from ..services import get_services
-from ..storage.base import PROVIDER_NAMES, StorageError
-from .permissions import is_chat_admin, require_group_admin
+from .. import thumbs
+from ..db import ChatConfig
+from ..services import Services, get_services
+from ..storage.base import PROVIDER_NAMES, StorageAuthError, StorageError
+from ..storage.registry import storage_location
+from ..storage.s3 import S3Backend
+from .permissions import is_anonymous_admin, is_chat_admin, require_group_admin
 from .setup import describe_location
 from .texts import WELCOME, help_text
 
@@ -36,6 +41,17 @@ NOT_CONFIGURED = "Este grupo aún no tiene almacenamiento. Un administrador pued
 # Arguments of /enlace that open the folder to anyone with the link or close it again.
 PUBLIC_OPTIONS = {"publico", "público", "public"}
 PRIVATE_OPTIONS = {"privado", "private"}
+GALLERY_OFF = (
+    "La galería web de este grupo no está activada. Un administrador puede activarla con /galeria."
+)
+GALLERY_BUTTONS = InlineKeyboardMarkup(
+    [
+        [
+            InlineKeyboardButton("🔄 Cambiar enlace", callback_data="gallery:rotate"),
+            InlineKeyboardButton("🚫 Desactivar", callback_data="gallery:off"),
+        ]
+    ]
+)
 
 
 def _in_group(update: Update) -> bool:
@@ -157,6 +173,102 @@ async def _set_link_access(update: Update, context: ContextTypes.DEFAULT_TYPE, o
         )
 
 
+def gallery_text(services: Services, token: str, note: str | None = None) -> str:
+    url = f"{services.settings.public_base_url}/g/{token}"
+    text = (
+        f"🖼 Galería del grupo: {url}\n\n"
+        "Ahí se ven las fotos, vídeos y GIFs guardados. Quien tenga el enlace puede verla: "
+        "no lo compartas fuera del grupo. Los administradores pueden cambiarlo o desactivar "
+        "la galería con los botones."
+    )
+    return f"{note}\n\n{text}" if note else text
+
+
+async def _gallery_warning(services: Services, chat: ChatConfig) -> str | None:
+    """Check the gallery will be able to read the files: S3 keys may only allow writing."""
+    if chat.provider != "s3":
+        return None
+    backend = services.backends.get(chat)
+    if not isinstance(backend, S3Backend):
+        return None
+    latest = await services.db.gallery_items(chat.chat_id, storage_location(chat), limit=1)
+    if not latest:
+        return None
+    try:
+        await backend.check_read(latest[0].remote_ref)
+    except StorageAuthError:
+        return (
+            "⚠️ Las claves de S3 no tienen permiso de lectura (s3:GetObject) en el bucket: "
+            "la galería no podrá mostrar las fotos hasta que se lo des."
+        )
+    except StorageError as exc:
+        log.info("Could not check S3 read access for chat %s: %s", chat.chat_id, exc)
+    return None
+
+
+async def gallery_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    if message is None:
+        return
+    if not _in_group(update):
+        await message.reply_text("Usa /galeria dentro del grupo cuyas fotos quieres ver.")
+        return
+    services = get_services(context)
+    chat = await services.db.get_chat(message.chat_id)
+    if chat is None:
+        await message.reply_text(NOT_CONFIGURED)
+        return
+    token = await services.db.get_gallery_token(chat.chat_id)
+    note = None
+    if token is None:
+        # Only an administrator can publish the gallery; anyone can ask for the link later.
+        user = update.effective_user
+        if is_anonymous_admin(message):
+            await require_group_admin(update, context.bot, services.settings)  # explains why
+            return
+        if user is None or not await is_chat_admin(context.bot, chat.chat_id, user.id):
+            await message.reply_text(GALLERY_OFF)
+            return
+        token = await services.db.create_gallery(chat.chat_id, user.id)
+        note = await _gallery_warning(services, chat) or "✅ Galería activada."
+    await message.reply_text(
+        gallery_text(services, token, note),
+        reply_markup=GALLERY_BUTTONS,
+        link_preview_options=LinkPreviewOptions(is_disabled=True),
+        # Members can't forward the link out of the group from Telegram.
+        protect_content=True,
+    )
+
+
+async def gallery_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if query is None or query.message is None:
+        return
+    chat_id = query.message.chat.id
+    services = get_services(context)
+    if not await is_chat_admin(context.bot, chat_id, query.from_user.id):
+        await query.answer("Solo los administradores pueden hacer esto.", show_alert=True)
+        return
+    await query.answer()
+    if query.data == "gallery:off":
+        await services.db.delete_gallery(chat_id)
+        await asyncio.to_thread(thumbs.delete_chat, services.settings, chat_id)
+        await query.edit_message_text(
+            "🚫 Galería desactivada: el enlace ya no funciona. "
+            "Un administrador puede volver a activarla con /galeria."
+        )
+        return
+    if await services.db.get_chat(chat_id) is None:
+        await query.edit_message_text(NOT_CONFIGURED)
+        return
+    token = await services.db.create_gallery(chat_id, query.from_user.id)
+    await query.edit_message_text(
+        gallery_text(services, token, "🔄 Enlace nuevo: el anterior ya no funciona."),
+        reply_markup=GALLERY_BUTTONS,
+        link_preview_options=LinkPreviewOptions(is_disabled=True),
+    )
+
+
 async def _set_paused(update: Update, context: ContextTypes.DEFAULT_TYPE, paused: bool) -> None:
     message = update.effective_message
     if message is None or not _in_group(update):
@@ -221,6 +333,7 @@ async def disconnect_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     await services.db.delete_chat(chat_id)
     services.backends.invalidate(chat_id)
+    await asyncio.to_thread(thumbs.delete_chat, services.settings, chat_id)
     await query.edit_message_text(
         "🔌 Almacenamiento desconectado. Usa /configurar para conectar uno nuevo."
     )
@@ -243,6 +356,9 @@ async def migrate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     services = get_services(context)
     await services.db.migrate_chat(message.chat_id, message.migrate_to_chat_id)
     services.backends.invalidate(message.chat_id)
+    await asyncio.to_thread(
+        thumbs.move_chat, services.settings, message.chat_id, message.migrate_to_chat_id
+    )
 
 
 async def my_chat_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -271,10 +387,12 @@ def build_handlers() -> list:
         CommandHandler("start", help_command, filters.ChatType.GROUPS),
         CommandHandler(["estado", "status"], status_command),
         CommandHandler(["enlace", "link"], link_command),
+        CommandHandler(["galeria", "gallery"], gallery_command),
         CommandHandler(["pausar", "pause"], pause_command),
         CommandHandler(["reanudar", "resume"], resume_command),
         CommandHandler(["desconectar", "disconnect"], disconnect_command),
         CallbackQueryHandler(disconnect_callback, pattern=r"^disconnect:"),
+        CallbackQueryHandler(gallery_callback, pattern=r"^gallery:"),
         CallbackQueryHandler(stale_setup_callback, pattern=r"^setup:"),
         MessageHandler(filters.StatusUpdate.MIGRATE, migrate_handler),
         ChatMemberHandler(my_chat_member_handler, ChatMemberHandler.MY_CHAT_MEMBER),

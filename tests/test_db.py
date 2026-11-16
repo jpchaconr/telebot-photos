@@ -80,7 +80,7 @@ async def test_reset_in_progress_and_stats(db):
         await db.enqueue_job(new_job(unique=unique))
     first = await db.claim_next_job()
     second = await db.claim_next_job()
-    await db.complete_job(first.id, "key")
+    await db.complete_job(first.id, "key", "s3:fotos")
     await db.fail_job(second.id, "nope")
     await db.claim_next_job()
     assert await db.job_stats(-100) == {"pending": 0, "in_progress": 1, "done": 1, "failed": 1}

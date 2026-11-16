@@ -22,7 +22,7 @@ from .storage.base import (
     StorageError,
     UploadRequest,
 )
-from .storage.registry import BackendRegistry
+from .storage.registry import BackendRegistry, storage_location
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +34,26 @@ AUTH_RETRY_DELAY = 60.0
 
 def backoff(attempts: int) -> float:
     return float(min(30 * 2 ** max(attempts - 1, 0), 3600))
+
+
+async def fetch_file(bot: Bot, settings: Settings, file_id: str, target: Path) -> tuple[Path, bool]:
+    """Download a Telegram file to ``target``.
+
+    With a local Bot API server the file is already on disk: its path is returned instead,
+    with True to say that it lives in the server's directory.
+    """
+    tg_file = await bot.get_file(file_id, read_timeout=GET_FILE_TIMEOUT)
+    file_path = tg_file.file_path or ""
+    if settings.local_bot_api and Path(file_path).is_absolute():
+        path = Path(file_path)
+        if not await asyncio.to_thread(path.is_file):
+            raise StorageError(
+                "El servidor local de la Bot API no comparte el archivo con el bot"
+                f" (no existe {path}); revisa el volumen compartido"
+            )
+        return path, True
+    await tg_file.download_to_drive(target, read_timeout=GET_FILE_TIMEOUT)
+    return target, False
 
 
 class UploadWorker:
@@ -139,7 +159,7 @@ class UploadWorker:
             finished = await self._retry_or_fail(job, _describe(exc))
         else:
             finished = True
-            await self._db.complete_job(job.id, ref)
+            await self._db.complete_job(job.id, ref, storage_location(chat))
             log.info("Uploaded job %s of chat %s as %s", job.id, job.chat_id, ref)
             await self._react(job)
         finally:
@@ -172,19 +192,8 @@ class UploadWorker:
 
     async def _fetch(self, job: Job) -> tuple[Path, bool]:
         """Return the local path of the file and whether it lives in the Bot API server's dir."""
-        tg_file = await self._bot.get_file(job.file_id, read_timeout=GET_FILE_TIMEOUT)
-        file_path = tg_file.file_path or ""
-        if self._settings.local_bot_api and Path(file_path).is_absolute():
-            path = Path(file_path)
-            if not await asyncio.to_thread(path.is_file):
-                raise StorageError(
-                    "El servidor local de la Bot API no comparte el archivo con el bot"
-                    f" (no existe {path}); revisa el volumen compartido"
-                )
-            return path, True
         target = self._settings.temp_dir / f"{job.id}_{job.file_unique_id}"
-        await tg_file.download_to_drive(target, read_timeout=GET_FILE_TIMEOUT)
-        return target, False
+        return await fetch_file(self._bot, self._settings, job.file_id, target)
 
     async def _retry_or_fail(self, job: Job, reason: str) -> bool:
         if job.attempts >= self._settings.max_attempts:

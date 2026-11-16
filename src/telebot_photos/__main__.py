@@ -36,6 +36,7 @@ GROUP_COMMANDS = [
     BotCommand("configurar", "Conectar o cambiar el almacenamiento (admins)"),
     BotCommand("estado", "Dónde se guarda y cuántos archivos llevo"),
     BotCommand("enlace", "Enlace a la carpeta"),
+    BotCommand("galeria", "Ver las fotos del grupo en la web"),
     BotCommand("pausar", "Pausar el guardado (admins)"),
     BotCommand("reanudar", "Reanudar el guardado (admins)"),
     BotCommand("desconectar", "Olvidar el almacenamiento (admins)"),

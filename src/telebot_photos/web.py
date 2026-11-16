@@ -78,8 +78,9 @@ def _bot_link(bot: Bot) -> str:
 
 async def index(request: web.Request) -> web.Response:
     bot = _bot_link(request.app[BOT_KEY])
+    app_name = request.app[SERVICES_KEY].settings.app_name
     return html_page(
-        "Bot de fotos para grupos de Telegram",
+        app_name or "Bot de fotos para grupos de Telegram",
         f"<p>{bot} guarda automáticamente las fotos, vídeos y archivos que se envían en un "
         "grupo de Telegram en el almacenamiento que elige un administrador del grupo: "
         "Google Drive, OneDrive o un bucket compatible con S3.</p>"
@@ -97,7 +98,9 @@ async def privacy(request: web.Request) -> web.Response:
         else "Contacta con el administrador del grupo que te invitó a usar el bot."
     )
     return html_page(
-        "Política de privacidad",
+        f"Política de privacidad de {settings.app_name}"
+        if settings.app_name
+        else "Política de privacidad",
         f"""
 <p>Este bot copia el contenido multimedia de grupos de Telegram en el almacenamiento que
 elige un administrador de cada grupo. Esta página explica qué datos trata y para qué.</p>

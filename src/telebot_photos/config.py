@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     # Shown on the public privacy page.
     contact_email: str | None = None
+    # Shown on the public pages; Google's brand verification wants it to match the consent screen.
+    app_name: str | None = None
     # Set by the Docker image build; reported by /health.
     app_version: str = "dev"
 

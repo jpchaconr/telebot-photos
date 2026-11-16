@@ -63,6 +63,14 @@ async def test_homepage_and_privacy_policy(client, settings):
     assert "mailto:ana@example.com" in text
 
 
+async def test_pages_show_the_app_name(client, settings):
+    settings.app_name = "Bildo & co"
+    home = await (await client.get("/")).text()
+    assert "<title>Bildo &amp; co</title>" in home and "<h1>Bildo &amp; co</h1>" in home
+    privacy = await (await client.get("/privacy")).text()
+    assert "<h1>Política de privacidad de Bildo &amp; co</h1>" in privacy
+
+
 async def test_unknown_or_used_state_is_rejected(client):
     response = await client.get("/oauth/google/callback", params={"state": "x", "code": "c"})
     assert response.status == 400
